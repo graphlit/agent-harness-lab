@@ -2,7 +2,7 @@
 
 Visual Next.js sample for comparing how agent harnesses use the same Graphlit tools across a continuous agent conversation.
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fgraphlit%2Fagent-harness-lab&project-name=agent-harness-lab&repository-name=agent-harness-lab&env=GRAPHLIT_ORGANIZATION_ID,GRAPHLIT_ENVIRONMENT_ID,GRAPHLIT_JWT_SECRET,OPENAI_API_KEY,ANTHROPIC_API_KEY,GEMINI_API_KEY&envDescription=Graphlit%20project%20credentials%20and%20provider%20API%20keys%20used%20by%20the%20comparison%20lanes.&envLink=https%3A%2F%2Fwww.graphlit.dev)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fgraphlit%2Fagent-harness-lab&project-name=agent-harness-lab&repository-name=agent-harness-lab&env=GRAPHLIT_ORGANIZATION_ID,GRAPHLIT_ENVIRONMENT_ID,GRAPHLIT_JWT_SECRET,OPENAI_API_KEY,ANTHROPIC_API_KEY,GEMINI_API_KEY&envDescription=Graphlit%20project%20credentials%20and%20model%20provider%20API%20keys.%20Configure%20at%20least%20one%20provider%20key.&envLink=https%3A%2F%2Fwww.graphlit.dev)
 
 The app runs enabled lanes in parallel:
 
@@ -43,7 +43,9 @@ GRAPHLIT_ENVIRONMENT_ID=
 GRAPHLIT_JWT_SECRET=
 ```
 
-Lane credentials:
+Model provider API keys:
+
+Configure at least one provider key. These are the normal API keys required to call each model provider directly; the app keeps them server-side and uses them for any harness that runs against that provider.
 
 ```bash
 OPENAI_API_KEY=
@@ -62,7 +64,7 @@ AGENT_HARNESS_LAB_MODEL_SIZE=large
 
 ## Deploy To Vercel
 
-Use the deploy button above to clone this repo into your Vercel account. Vercel will prompt for the required Graphlit and provider environment variables before the first deployment.
+Use the deploy button above to clone this repo into your Vercel account. Vercel will prompt for Graphlit variables and model provider API key fields before the first deployment. Configure at least one provider key to run the app.
 
 ## How It Works
 
@@ -85,8 +87,8 @@ Pull requests are welcome for additional model providers and agent harness lanes
 
 ## Runtime Notes
 
-Provider API keys are only used on the server. Missing provider keys disable the matching provider-specific lane. For provider-neutral lanes, the selected provider preference determines which key is required for the current run.
+Provider API keys are only used on the server. Missing provider keys disable the matching provider choice in the UI. Graphlit, Vercel AI SDK, LangGraph, and Mastra use the selected provider preference, so they require the key for that selected provider. OpenAI Agents SDK, Claude Agent SDK, and Google ADK always use their native provider key.
 
-- `OPENAI_API_KEY`: OpenAI Agents SDK and OpenAI-preferred neutral runs
-- `ANTHROPIC_API_KEY`: Claude Agent SDK and Anthropic-preferred neutral runs
-- `GEMINI_API_KEY`: Google ADK and Google-preferred neutral runs
+- `OPENAI_API_KEY`: enables OpenAI models
+- `ANTHROPIC_API_KEY`: enables Anthropic Claude models
+- `GEMINI_API_KEY`: enables Google Gemini models

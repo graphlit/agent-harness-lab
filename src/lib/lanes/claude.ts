@@ -5,7 +5,7 @@ import type {
   SdkMcpToolDefinition,
 } from "@anthropic-ai/claude-agent-sdk";
 
-import { CLAUDE_MODELS, SYSTEM_PROMPT } from "@/lib/constants";
+import { CLAUDE_MODELS } from "@/lib/constants";
 import { createGraphlitClient } from "@/lib/graphlit/client";
 import { LaneRunRecorder } from "@/lib/lanes/recorder";
 import type { LaneRunContext, LaneRunResult } from "@/lib/types";
@@ -158,7 +158,7 @@ export async function runClaudeLane(
           [agentName]: {
             description:
               "Answers questions using Graphlit retrieval and source inspection tools.",
-            prompt: SYSTEM_PROMPT,
+            ...(context.systemPrompt ? { prompt: context.systemPrompt } : {}),
             tools: allowedTools,
             model: CLAUDE_MODELS[context.modelSize],
             effort: context.reasoningEffort,

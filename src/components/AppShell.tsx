@@ -2,14 +2,24 @@
 
 import {
   Clock,
+  Globe,
   Hash,
+  Info,
   Loader2,
   Moon,
+  Paperclip,
   RotateCcw,
   Send,
   Sun,
+  X,
 } from "lucide-react";
-import type { KeyboardEvent, ReactNode, RefObject } from "react";
+import type {
+  ChangeEvent,
+  FormEvent,
+  KeyboardEvent,
+  ReactNode,
+  RefObject,
+} from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import JSONPretty from "react-json-pretty";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
@@ -23,11 +33,12 @@ import {
   DEFAULT_MODEL_PROVIDER,
   DEFAULT_MODEL_SIZE,
   DEFAULT_REASONING_EFFORT,
+  DEFAULT_SYSTEM_PROMPT_ENABLED,
   LANE_LABELS,
   MODEL_PROVIDER_LABELS,
   MODEL_PROVIDER_PREFERENCES,
+  SYSTEM_PROMPT,
   getLaneModelLabel,
-  titleCaseEffort,
 } from "@/lib/constants";
 import {
   LANE_IDS,
@@ -110,6 +121,20 @@ type BootstrapFetchResult = {
   body: BootstrapStatus | { error?: string };
 };
 
+type IngestApiResult = {
+  type: "uri" | "file";
+  contentId: string;
+  name: string;
+  ready: boolean;
+  message: string;
+};
+
+type IngestUiStatus = {
+  state: "running" | "ready" | "pending" | "error";
+  kind?: "uri" | "file";
+  message: string;
+};
+
 let bootstrapFetchPromise: Promise<BootstrapFetchResult> | null = null;
 
 function classNames(...values: Array<string | false | undefined>): string {
@@ -128,6 +153,36 @@ function browserErrorDetails(error: unknown): Record<string, unknown> {
   return {
     message: String(error),
   };
+}
+
+function isIngestApiResult(value: unknown): value is IngestApiResult {
+  return (
+    isRecord(value) &&
+    (value.type === "uri" || value.type === "file") &&
+    typeof value.contentId === "string" &&
+    typeof value.name === "string" &&
+    typeof value.ready === "boolean" &&
+    typeof value.message === "string"
+  );
+}
+
+async function readIngestApiResult(response: Response): Promise<IngestApiResult> {
+  const body: unknown = await response.json().catch(() => null);
+
+  if (!response.ok) {
+    const message =
+      isRecord(body) && typeof body.error === "string"
+        ? body.error
+        : response.statusText;
+
+    throw new Error(message || "Failed to ingest content into Graphlit.");
+  }
+
+  if (!isIngestApiResult(body)) {
+    throw new Error("Graphlit ingest returned an unexpected response.");
+  }
+
+  return body;
 }
 
 function createClientId(prefix: string): string {
@@ -169,7 +224,7 @@ function defaultEnabledLanes(bootstrap: BootstrapStatus | null): Set<LaneId> {
   }
 
   for (const laneId of DEFAULT_LANES) {
-    if (laneId === "graphlit" || bootstrap.lanes[laneId]?.enabled) {
+    if (bootstrap.lanes[laneId]?.enabled) {
       lanes.add(laneId);
     }
   }
@@ -348,7 +403,7 @@ function formatElapsedMs(ms: number): string {
 }
 
 function formatTokenCount(value: number | null): string {
-  return value === null ? "— TKN" : `${value.toLocaleString()} TKN`;
+  return value === null ? "— TOK" : `${value.toLocaleString()} TOK`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -701,10 +756,12 @@ export function AppShell() {
     DEFAULT_MODEL_PROVIDER,
   );
   const [modelSize, setModelSize] = useState<ModelSize>(DEFAULT_MODEL_SIZE);
+  const [systemPromptEnabled, setSystemPromptEnabled] = useState(
+    DEFAULT_SYSTEM_PROMPT_ENABLED,
+  );
   const [judgeEnabled, setJudgeEnabled] = useState(true);
   const [judge, setJudge] = useState<JudgeUiState>({ status: "idle" });
   const [isRunning, setIsRunning] = useState(false);
-  const [isConsoleCollapsed, setIsConsoleCollapsed] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [colorTheme, setColorTheme] = useState<ColorTheme>("dark");
   const promptRef = useRef<HTMLTextAreaElement>(null);
@@ -944,7 +1001,6 @@ export function AppShell() {
         turnId: event.turnId,
         result: event.result,
       });
-      setIsConsoleCollapsed(true);
     }
 
     if (event.type === "judge_failed") {
@@ -983,7 +1039,6 @@ export function AppShell() {
     setHistoryIndex(-1);
     setHistoryDraft("");
     setIsRunning(true);
-    setIsConsoleCollapsed(false);
     setRunLaneIds(new Set([...priorVisibleLaneIds, ...selectedLanes]));
     setJudge({ status: "idle", turnId });
     setLanes((current) =>
@@ -1032,6 +1087,7 @@ export function AppShell() {
             reasoningEffort,
             modelProvider,
             modelSize,
+            systemPromptEnabled,
             laneSession: laneSessions[laneId],
           }),
           signal: laneRequest.signal,
@@ -1185,7 +1241,6 @@ export function AppShell() {
               turnId,
               result: body.result,
             });
-            setIsConsoleCollapsed(true);
           } catch (error) {
             if (isAbortError(error)) {
               if (judgeRequest.timedOut()) {
@@ -1265,10 +1320,10 @@ export function AppShell() {
     );
     setModelProvider(bootstrap?.defaultModelProvider ?? DEFAULT_MODEL_PROVIDER);
     setModelSize(bootstrap?.defaultModelSize ?? DEFAULT_MODEL_SIZE);
+    setSystemPromptEnabled(DEFAULT_SYSTEM_PROMPT_ENABLED);
     setJudgeEnabled(true);
     setJudge({ status: "idle" });
     setIsRunning(false);
-    setIsConsoleCollapsed(false);
     setEnabledLanes(nextEnabled);
     setRunLaneIds(nextEnabled);
     setLanes(
@@ -1343,7 +1398,7 @@ export function AppShell() {
         className="relative flex min-h-0 w-full flex-1 flex-col overflow-hidden bg-zinc-50 transition-colors duration-200 dark:bg-[#09090b]"
       >
         {laneList.every((lane) => !laneHasTranscript(lane)) ? (
-          <div className="hide-scrollbar flex min-h-0 w-full flex-1 flex-nowrap snap-x snap-mandatory overflow-x-auto md:snap-none [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+          <div className="agent-harness-lanes-scroll flex min-h-0 w-full flex-1 flex-nowrap snap-x snap-mandatory overflow-x-auto md:snap-none">
             <div className="flex h-full w-full shrink-0 snap-center flex-col items-center justify-center border-r border-transparent px-6 pb-40 last:border-r-0 md:flex-1 md:shrink md:border-zinc-200 dark:md:border-zinc-800">
               <div className="text-center">
                 <div
@@ -1366,7 +1421,7 @@ export function AppShell() {
           </div>
         ) : (
           <>
-            <div className="hide-scrollbar flex min-h-0 w-full flex-1 flex-nowrap snap-x snap-mandatory overflow-x-auto md:snap-none [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+            <div className="agent-harness-lanes-scroll flex min-h-0 w-full flex-1 flex-nowrap snap-x snap-mandatory overflow-x-auto md:snap-none">
               {visibleLaneList.map((lane) => (
                 <LanePanel
                   key={lane.id}
@@ -1379,7 +1434,7 @@ export function AppShell() {
                 />
               ))}
             </div>
-            <JudgePanel judge={judge} />
+            <JudgePanel judge={judge} onClose={() => setJudge({ status: "idle" })} />
           </>
         )}
       </section>
@@ -1394,6 +1449,8 @@ export function AppShell() {
         setModelProvider={setModelProvider}
         modelSize={modelSize}
         setModelSize={setModelSize}
+        systemPromptEnabled={systemPromptEnabled}
+        setSystemPromptEnabled={setSystemPromptEnabled}
         judgeEnabled={judgeEnabled}
         setJudgeEnabled={setJudgeEnabled}
         enabledLanes={enabledLanes}
@@ -1402,8 +1459,6 @@ export function AppShell() {
         bootstrapError={bootstrapError}
         isRunning={isRunning}
         canRun={canRun}
-        isCollapsed={isConsoleCollapsed}
-        setIsCollapsed={setIsConsoleCollapsed}
         onPromptKeyDown={handlePromptKeyDown}
         onRun={runComparison}
       />
@@ -1438,6 +1493,8 @@ function Composer({
   setModelProvider,
   modelSize,
   setModelSize,
+  systemPromptEnabled,
+  setSystemPromptEnabled,
   judgeEnabled,
   setJudgeEnabled,
   enabledLanes,
@@ -1446,8 +1503,6 @@ function Composer({
   bootstrapError,
   isRunning,
   canRun,
-  isCollapsed,
-  setIsCollapsed,
   onPromptKeyDown,
   onRun,
 }: {
@@ -1460,6 +1515,8 @@ function Composer({
   setModelProvider: (value: ModelProviderPreference) => void;
   modelSize: ModelSize;
   setModelSize: (value: ModelSize) => void;
+  systemPromptEnabled: boolean;
+  setSystemPromptEnabled: (value: boolean) => void;
   judgeEnabled: boolean;
   setJudgeEnabled: (value: boolean) => void;
   enabledLanes: Set<LaneId>;
@@ -1468,86 +1525,247 @@ function Composer({
   bootstrapError: string | null;
   isRunning: boolean;
   canRun: boolean;
-  isCollapsed: boolean;
-  setIsCollapsed: (value: boolean) => void;
   onPromptKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
   onRun: () => void;
 }) {
   const hasPrompt = prompt.trim().length > 0;
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [ingestStatus, setIngestStatus] = useState<IngestUiStatus | null>(null);
+  const [isUriFormOpen, setIsUriFormOpen] = useState(false);
+  const [uriValue, setUriValue] = useState("");
+  const isIngesting = ingestStatus?.state === "running";
+  const graphlitIngestDisabled =
+    isRunning || isIngesting || bootstrap?.graphlit.ready !== true;
+  const graphlitIngestDisabledReason =
+    bootstrap?.graphlit.error ?? "Checking Graphlit project...";
   const statusText = bootstrap?.graphlit.ready
-    ? "Project bound successfully."
+    ? "Project initialized successfully."
     : (bootstrap?.graphlit.error ?? "Checking Graphlit project...");
   const telemetryText =
-    [bootstrapError, bootstrap?.warning, statusText].filter(Boolean).join(" ") ||
+    [bootstrapError, bootstrap?.warning, ingestStatus?.message, statusText]
+      .filter(Boolean)
+      .join(" ") ||
     "Ready.";
-  const summaryModelSize = modelSize === "large" ? "Large" : "Small";
-  const summaryText = `Effort: ${titleCaseEffort(reasoningEffort)} • Provider: ${MODEL_PROVIDER_LABELS[modelProvider]} • Model: ${summaryModelSize}`;
+  async function ingestUri(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const uri = uriValue.trim();
+
+    if (!uri || graphlitIngestDisabled) {
+      return;
+    }
+
+    setIngestStatus({
+      state: "running",
+      kind: "uri",
+      message: "Ingesting URI into Graphlit...",
+    });
+
+    try {
+      const response = await fetch("/api/ingest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "uri", uri }),
+      });
+      const result = await readIngestApiResult(response);
+
+      setIngestStatus({
+        state: result.ready ? "ready" : "pending",
+        kind: "uri",
+        message: result.message,
+      });
+      setUriValue("");
+      setIsUriFormOpen(false);
+    } catch (error) {
+      setIngestStatus({
+        state: "error",
+        kind: "uri",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  async function ingestSelectedFile(file: File) {
+    if (graphlitIngestDisabled) {
+      return;
+    }
+
+    setIngestStatus({
+      state: "running",
+      kind: "file",
+      message: `Ingesting ${file.name} into Graphlit...`,
+    });
+
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const response = await fetch("/api/ingest", {
+        method: "POST",
+        body: formData,
+      });
+      const result = await readIngestApiResult(response);
+
+      setIngestStatus({
+        state: result.ready ? "ready" : "pending",
+        kind: "file",
+        message: result.message,
+      });
+    } catch (error) {
+      setIngestStatus({
+        state: "error",
+        kind: "file",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = "";
+    setIsUriFormOpen(false);
+
+    if (file) {
+      void ingestSelectedFile(file);
+    }
+  }
 
   return (
     <footer className="flex shrink-0 flex-col justify-end border-t border-zinc-200 bg-zinc-50 pt-4 transition-colors duration-200 dark:border-zinc-900 dark:bg-[#09090b]">
-      {isCollapsed ? (
-        <button
-          type="button"
-          className="mx-auto flex w-full max-w-5xl cursor-pointer items-center justify-between rounded-t-xl border border-zinc-200 bg-white p-3 text-left shadow-[0_-10px_40px_rgba(0,0,0,0.05)] transition-all hover:bg-zinc-50 dark:border-zinc-800 dark:bg-[#09090b] dark:hover:bg-zinc-900/50"
-          onClick={() => setIsCollapsed(false)}
-        >
-          <span className="font-mono text-[10px] uppercase text-zinc-500">
-            {summaryText}
-          </span>
-          <span className="shrink-0 rounded-md border border-zinc-200 px-3 py-1 text-sm font-medium text-zinc-700 dark:border-zinc-800 dark:text-zinc-200">
-            + New Prompt
-          </span>
-        </button>
-      ) : (
-        <div className="mx-auto flex w-full max-w-5xl shrink-0 flex-col px-4 pb-4 md:px-6 md:pb-6">
-          <div className="hide-scrollbar mb-4 flex w-full snap-x snap-mandatory items-center justify-start gap-4 overflow-x-auto px-4 pb-2 text-zinc-400 md:justify-center md:gap-6">
-            <Segmented
-              label="Effort"
-              values={["low", "medium", "high"]}
-              selected={reasoningEffort}
-              onSelect={(value) =>
-                setReasoningEffort(value as ReasoningEffort)
-              }
+      <div className="mx-auto flex w-full max-w-5xl shrink-0 flex-col px-4 pb-4 md:px-6 md:pb-6">
+        <div className="hide-scrollbar mb-4 flex w-full snap-x snap-mandatory items-center justify-start gap-4 overflow-x-auto px-4 pb-2 text-zinc-400 md:justify-center md:gap-6">
+          <Segmented
+            label="Effort"
+            values={["low", "medium", "high"]}
+            selected={reasoningEffort}
+            onSelect={(value) =>
+              setReasoningEffort(value as ReasoningEffort)
+            }
+            disabled={isRunning}
+          />
+          <ProviderPreference
+            selected={modelProvider}
+            onSelect={setModelProvider}
+            providers={bootstrap?.modelProviders}
+            disabled={isRunning}
+          />
+          <Segmented
+            label="Model"
+            values={["large", "small"]}
+            selected={modelSize}
+            onSelect={(value) => setModelSize(value as ModelSize)}
+            disabled={isRunning}
+          />
+          <SystemPromptSwitch
+            enabled={systemPromptEnabled}
+            disabled={isRunning}
+            onToggle={() => setSystemPromptEnabled(!systemPromptEnabled)}
+          />
+          <div className="h-6 w-px shrink-0 snap-start bg-zinc-200 dark:bg-zinc-800" />
+          <JudgeSwitch
+            enabled={judgeEnabled}
+            disabled={isRunning}
+            onToggle={() => setJudgeEnabled(!judgeEnabled)}
+          />
+        </div>
+        <div className="flex w-full flex-col overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900/20">
+          <div className="relative w-full flex flex-col">
+            <textarea
+              ref={promptRef}
+              value={prompt}
+              onChange={(event) => setPrompt(event.target.value)}
+              onKeyDown={onPromptKeyDown}
+              className="w-full min-h-[100px] appearance-none bg-transparent px-4 pt-4 pb-12 text-base text-zinc-900 outline-none dark:text-zinc-100 placeholder:text-zinc-500 border-none shadow-none focus:outline-none focus:ring-0 focus:shadow-none focus-visible:outline-none focus-visible:ring-0 resize-none"
+              placeholder="Ask anything..."
               disabled={isRunning}
             />
-            <ProviderPreference
-              selected={modelProvider}
-              onSelect={setModelProvider}
-              disabled={isRunning}
+            <input
+              ref={fileInputRef}
+              type="file"
+              className="hidden"
+              onChange={handleFileChange}
+              disabled={graphlitIngestDisabled}
             />
-            <Segmented
-              label="Model"
-              values={["large", "small"]}
-              selected={modelSize}
-              onSelect={(value) => setModelSize(value as ModelSize)}
-              disabled={isRunning}
-            />
-            <div className="h-6 w-px shrink-0 snap-start bg-zinc-200 dark:bg-zinc-800" />
-            <JudgeSwitch
-              enabled={judgeEnabled}
-              disabled={isRunning}
-              onToggle={() => setJudgeEnabled(!judgeEnabled)}
-            />
-          </div>
-          <div className="flex w-full flex-col overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900/20">
-            <div className="relative flex w-full">
-              <textarea
-                ref={promptRef}
-                value={prompt}
-                onChange={(event) => setPrompt(event.target.value)}
-                onKeyDown={onPromptKeyDown}
-                className="min-h-[90px] w-full resize-none border-none bg-transparent py-3 pl-3 pr-24 text-base text-zinc-900 outline-none placeholder:text-zinc-500 focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0 md:py-4 md:pl-4 md:pr-32 dark:text-zinc-100"
-                placeholder="Ask anything..."
-                disabled={isRunning}
-              />
+            <div className="absolute bottom-2 left-3 right-3 flex items-center justify-between gap-3">
+              <div className="flex min-w-0 flex-1 items-center gap-1">
+                <button
+                  type="button"
+                  aria-label="Add file"
+                  title={
+                    graphlitIngestDisabled
+                      ? graphlitIngestDisabledReason
+                      : "Add file"
+                  }
+                  className="flex items-center justify-center w-8 h-8 rounded-md text-zinc-400 hover:text-zinc-900 hover:bg-zinc-100 dark:hover:text-zinc-100 dark:hover:bg-zinc-800 transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+                  onClick={() => {
+                    setIsUriFormOpen(false);
+                    fileInputRef.current?.click();
+                  }}
+                  disabled={graphlitIngestDisabled}
+                >
+                  {isIngesting && ingestStatus?.kind === "file" ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Paperclip className="w-4 h-4" />
+                  )}
+                </button>
+                <button
+                  type="button"
+                  aria-label="Add URI"
+                  title={
+                    graphlitIngestDisabled
+                      ? graphlitIngestDisabledReason
+                      : "Add URI"
+                  }
+                  className={classNames(
+                    "flex items-center justify-center w-8 h-8 rounded-md text-zinc-400 hover:text-zinc-900 hover:bg-zinc-100 dark:hover:text-zinc-100 dark:hover:bg-zinc-800 transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50",
+                    isUriFormOpen &&
+                    "bg-zinc-100 text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100",
+                  )}
+                  onClick={() => setIsUriFormOpen((current) => !current)}
+                  disabled={graphlitIngestDisabled}
+                >
+                  {isIngesting && ingestStatus?.kind === "uri" ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Globe className="w-4 h-4" />
+                  )}
+                </button>
+                {isUriFormOpen ? (
+                  <>
+                    <div className="mx-2 h-6 w-px shrink-0 rounded-full bg-zinc-300 dark:bg-zinc-700" />
+                    <form
+                      className="flex min-w-0 flex-1 items-center gap-2"
+                      onSubmit={ingestUri}
+                    >
+                      <input
+                        type="url"
+                        value={uriValue}
+                        onChange={(event) => setUriValue(event.target.value)}
+                        className="h-8 min-w-0 max-w-md flex-1 rounded-md border border-zinc-200 bg-white px-3 text-sm text-zinc-900 outline-none transition-colors placeholder:text-zinc-500 focus:border-zinc-400 focus:ring-0 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-100 dark:focus:border-zinc-600"
+                        placeholder="https://..."
+                        disabled={isIngesting}
+                        autoFocus
+                      />
+                      <button
+                        type="submit"
+                        className="flex h-8 shrink-0 items-center justify-center rounded-md bg-zinc-900 px-3 text-sm font-medium text-white shadow-sm transition-colors hover:bg-black disabled:cursor-not-allowed disabled:opacity-50 dark:bg-white dark:text-zinc-950 dark:hover:bg-zinc-200"
+                        disabled={!uriValue.trim() || isIngesting}
+                      >
+                        Ingest
+                      </button>
+                    </form>
+                  </>
+                ) : null}
+              </div>
               <button
                 type="button"
                 title="Send (Ctrl+Enter)"
                 className={classNames(
-                  "absolute right-4 top-1/2 z-10 flex h-8 shrink-0 -translate-y-1/2 items-center justify-center gap-2 rounded-md border border-transparent bg-zinc-100 px-3 text-sm font-medium text-zinc-900 transition-all duration-200 hover:border-zinc-300 hover:bg-zinc-200 md:h-9 md:px-4 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 dark:hover:border-zinc-500 dark:hover:bg-zinc-700",
+                  "flex items-center justify-center gap-2 px-4 h-8 rounded-md text-sm font-medium transition-all duration-200 shrink-0",
                   hasPrompt
-                    ? "cursor-pointer opacity-100 shadow-sm"
-                    : "cursor-not-allowed opacity-40 shadow-none grayscale",
+                    ? "opacity-100 cursor-pointer shadow-sm bg-zinc-900 text-white hover:bg-black dark:bg-white dark:text-zinc-950 dark:hover:bg-zinc-200"
+                    : "opacity-40 grayscale cursor-not-allowed shadow-none bg-zinc-100 text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100",
                 )}
                 onClick={() => void onRun()}
                 disabled={!canRun}
@@ -1560,22 +1778,56 @@ function Composer({
                 Send
               </button>
             </div>
-            <div className="flex w-full items-center gap-3 overflow-hidden border-t border-zinc-200 bg-zinc-50/50 p-2 md:gap-4 md:p-3 dark:border-zinc-800 dark:bg-zinc-950/40">
-              <div className="flex shrink-0 items-center gap-4">
-                {(() => {
-                  const laneId: LaneId = "graphlit";
+          </div>
+          <div className="flex w-full items-center gap-3 overflow-hidden border-t border-zinc-200 bg-zinc-50/50 p-2 md:gap-4 md:p-3 dark:border-zinc-800 dark:bg-zinc-950/40">
+            <div className="flex shrink-0 items-center gap-4">
+              {(() => {
+                const laneId: LaneId = "graphlit";
+                const readiness = bootstrap?.lanes[laneId];
+                return (
+                  <a
+                    href="https://www.graphlit.dev/home"
+                    target="_blank"
+                    rel="noreferrer"
+                    aria-label="Manage content in Graphlit"
+                    className={classNames(
+                      "flex h-8 shrink-0 cursor-pointer items-center gap-2 rounded-md border border-[#4752c4] bg-[#5865F2] px-3 text-xs font-semibold text-white shadow-sm ring-1 ring-inset ring-white/10 transition-all hover:border-[#7289da] hover:bg-[#4752c4] dark:border-[#7289da]",
+                      isRunning && "opacity-80",
+                    )}
+                    title={
+                      readiness?.reason
+                        ? `${readiness.reason} Open Graphlit.`
+                        : "Manage content in Graphlit"
+                    }
+                  >
+                    <BrandIcon
+                      name={laneIconName(laneId)}
+                      className="h-3.5 w-3.5 opacity-100 grayscale-0"
+                      alt={LANE_LABELS[laneId]}
+                    />
+                    {LANE_LABELS[laneId]}
+                  </a>
+                );
+              })()}
+              <div className="h-6 w-px rounded-full bg-zinc-300 dark:bg-zinc-700" />
+            </div>
+            <div className="hide-scrollbar flex flex-1 items-center justify-start gap-2 overflow-x-auto md:flex-wrap md:overflow-visible">
+              {LANE_IDS.filter((laneId) => laneId !== "graphlit").map(
+                (laneId) => {
                   const readiness = bootstrap?.lanes[laneId];
-                  const disabled =
-                    laneId === "graphlit" ||
-                    isRunning ||
-                    readiness?.enabled === false;
+                  const disabled = isRunning || readiness?.enabled === false;
+                  const isEnabled = enabledLanes.has(laneId);
 
                   return (
                     <button
+                      key={laneId}
                       type="button"
                       className={classNames(
-                        "flex h-8 shrink-0 cursor-default items-center gap-2 rounded-md border border-[#4752c4] bg-[#5865F2] px-3 text-xs font-semibold text-white shadow-sm ring-1 ring-inset ring-white/10 transition-all dark:border-[#7289da]",
-                        disabled && "cursor-default",
+                        "agent-harness-lane-toggle group flex h-8 shrink-0 cursor-pointer items-center gap-2 whitespace-nowrap rounded-md px-3 text-xs font-medium transition-all disabled:cursor-not-allowed",
+                        isEnabled
+                          ? "border border-zinc-300 bg-zinc-100 text-zinc-900 shadow-sm dark:border-zinc-500 dark:bg-zinc-700 dark:text-zinc-50"
+                          : "border border-zinc-200 bg-white text-zinc-600 hover:bg-zinc-50 hover:text-zinc-900 dark:border-zinc-800 dark:bg-transparent dark:text-zinc-400 dark:hover:bg-zinc-900/50 dark:hover:text-zinc-200",
+                        disabled && "opacity-45",
                       )}
                       onClick={() => toggleLane(laneId)}
                       disabled={disabled}
@@ -1583,57 +1835,23 @@ function Composer({
                     >
                       <BrandIcon
                         name={laneIconName(laneId)}
-                        className="h-3.5 w-3.5 opacity-100 grayscale-0"
+                        className={classNames(
+                          "h-3.5 w-3.5",
+                          isEnabled
+                            ? "opacity-100 grayscale-0"
+                            : "opacity-60 grayscale transition-all group-hover:opacity-100 group-hover:grayscale-0",
+                        )}
                         alt={LANE_LABELS[laneId]}
                       />
                       {LANE_LABELS[laneId]}
                     </button>
                   );
-                })()}
-                <div className="h-6 w-px rounded-full bg-zinc-300 dark:bg-zinc-700" />
-              </div>
-              <div className="hide-scrollbar flex flex-1 items-center justify-start gap-2 overflow-x-auto md:flex-wrap md:overflow-visible">
-                {LANE_IDS.filter((laneId) => laneId !== "graphlit").map(
-                  (laneId) => {
-                    const readiness = bootstrap?.lanes[laneId];
-                    const disabled = isRunning || readiness?.enabled === false;
-                    const isEnabled = enabledLanes.has(laneId);
-
-                    return (
-                      <button
-                        key={laneId}
-                        type="button"
-                        className={classNames(
-                          "agent-harness-lane-toggle group flex h-8 shrink-0 cursor-pointer items-center gap-2 whitespace-nowrap rounded-md px-3 text-xs font-medium transition-all disabled:cursor-not-allowed",
-                          isEnabled
-                            ? "border border-zinc-300 bg-zinc-100 text-zinc-900 shadow-sm dark:border-zinc-500 dark:bg-zinc-700 dark:text-zinc-50"
-                            : "border border-zinc-200 bg-white text-zinc-600 hover:bg-zinc-50 hover:text-zinc-900 dark:border-zinc-800 dark:bg-transparent dark:text-zinc-400 dark:hover:bg-zinc-900/50 dark:hover:text-zinc-200",
-                          disabled && "opacity-45",
-                        )}
-                        onClick={() => toggleLane(laneId)}
-                        disabled={disabled}
-                        title={readiness?.reason}
-                      >
-                        <BrandIcon
-                          name={laneIconName(laneId)}
-                          className={classNames(
-                            "h-3.5 w-3.5",
-                            isEnabled
-                              ? "opacity-100 grayscale-0"
-                              : "opacity-60 grayscale transition-all group-hover:opacity-100 group-hover:grayscale-0",
-                          )}
-                          alt={LANE_LABELS[laneId]}
-                        />
-                        {LANE_LABELS[laneId]}
-                      </button>
-                    );
-                  },
-                )}
-              </div>
+                },
+              )}
             </div>
           </div>
         </div>
-      )}
+      </div>
       <div className="flex w-full shrink-0 items-center justify-center gap-2 border-t border-zinc-200 bg-zinc-50 py-2 font-mono text-[11px] tracking-wider text-zinc-500 dark:border-zinc-900 dark:bg-[#09090b]">
         <span className="h-2 w-2 animate-pulse rounded-full bg-zinc-400 dark:bg-zinc-700" />
         <span>{telemetryText}</span>
@@ -1660,6 +1878,7 @@ function JudgeSwitch({
         type="button"
         role="switch"
         aria-checked={enabled}
+        aria-label={enabled ? "Use optimized system prompt" : "Use provider defaults"}
         className={classNames(
           enabled
             ? "rounded-md border border-zinc-950 bg-zinc-900 px-3 py-1 text-xs font-semibold text-white dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-50"
@@ -1675,13 +1894,87 @@ function JudgeSwitch({
   );
 }
 
+function SystemPromptSwitch({
+  enabled,
+  disabled,
+  onToggle,
+}: {
+  enabled: boolean;
+  disabled: boolean;
+  onToggle: () => void;
+}) {
+  const [isPromptOpen, setIsPromptOpen] = useState(false);
+
+  return (
+    <div className="relative flex shrink-0 snap-start items-center">
+      <span className="mr-2 shrink-0 text-[10px] font-bold uppercase tracking-widest text-zinc-500">
+        System
+      </span>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={enabled}
+        className={classNames(
+          enabled
+            ? "rounded-md border border-zinc-950 bg-zinc-900 px-3 py-1 text-xs font-semibold text-white dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-50"
+            : "rounded-md border border-zinc-200/80 bg-zinc-100/80 px-3 py-1 text-xs font-medium text-zinc-500 transition-colors hover:text-zinc-900 dark:border-zinc-800/80 dark:bg-zinc-900/80 dark:text-zinc-400 dark:hover:text-zinc-200",
+          disabled && "cursor-not-allowed opacity-60",
+        )}
+        onClick={onToggle}
+        disabled={disabled}
+      >
+        {enabled ? "Optimized" : "Default"}
+      </button>
+      <button
+        type="button"
+        aria-label={
+          enabled
+            ? "Show optimized system prompt"
+            : "Show provider default details"
+        }
+        aria-expanded={isPromptOpen}
+        className="ml-1 flex h-6 w-6 items-center justify-center rounded-md text-zinc-400 transition-colors hover:bg-zinc-100 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
+        onClick={() => setIsPromptOpen((current) => !current)}
+      >
+        <Info className="h-3.5 w-3.5" />
+      </button>
+      {isPromptOpen ? (
+        <div className="fixed bottom-36 left-4 right-4 z-50 mx-auto max-w-2xl">
+          <div className="rounded-md border border-zinc-200 bg-white p-3 text-left shadow-xl dark:border-zinc-800 dark:bg-zinc-950">
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <div className="font-mono text-[10px] uppercase tracking-widest text-zinc-500">
+                {enabled ? "Optimized System Prompt" : "Provider Defaults"}
+              </div>
+              <button
+                type="button"
+                aria-label="Close system prompt"
+                className="flex h-6 w-6 items-center justify-center rounded-md text-zinc-400 transition-colors hover:bg-zinc-100 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
+                onClick={() => setIsPromptOpen(false)}
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+            <pre className="max-h-44 whitespace-pre-wrap rounded-sm bg-zinc-50 p-3 text-[11px] leading-5 text-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
+              {enabled
+                ? SYSTEM_PROMPT
+                : "No optimized system prompt is sent. Each harness uses its provider or SDK defaults."}
+            </pre>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function ProviderPreference({
   selected,
   onSelect,
+  providers,
   disabled,
 }: {
   selected: ModelProviderPreference;
   onSelect: (value: ModelProviderPreference) => void;
+  providers?: BootstrapStatus["modelProviders"];
   disabled?: boolean;
 }) {
   return (
@@ -1693,22 +1986,25 @@ function ProviderPreference({
         {MODEL_PROVIDER_PREFERENCES.map((provider) => {
           const active = selected === provider;
           const label = MODEL_PROVIDER_LABELS[provider];
+          const readiness = providers?.[provider];
+          const isUnavailable = readiness?.enabled === false;
+          const isDisabled = disabled || isUnavailable;
 
           return (
             <button
               key={provider}
               type="button"
               aria-label={label}
-              title={label}
+              title={readiness?.reason ?? label}
               className={classNames(
                 "flex items-center justify-center rounded-sm px-2.5 py-1 transition-colors",
                 active
                   ? "border border-zinc-200 bg-white text-zinc-900 shadow-sm dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-50"
                   : "text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-200",
-                disabled && "cursor-not-allowed opacity-60",
+                isDisabled && "cursor-not-allowed opacity-35 grayscale",
               )}
               onClick={() => onSelect(provider)}
-              disabled={disabled}
+              disabled={isDisabled}
             >
               <BrandIcon
                 name={providerIconName(provider)}
@@ -1985,15 +2281,15 @@ function normalizeTurnTrace(
       session: lane.session,
       result: turn.result
         ? {
-            harnessName: turn.result.harnessName,
-            modelLabel: turn.result.modelLabel,
-            reasoningEffort: turn.result.reasoningEffort,
-            effectiveReasoningEffort: turn.result.effectiveReasoningEffort,
-            modelProvider: turn.result.modelProvider,
-            modelSize: turn.result.modelSize,
-            durationMs: turn.result.durationMs,
-            error: turn.result.error,
-          }
+          harnessName: turn.result.harnessName,
+          modelLabel: turn.result.modelLabel,
+          reasoningEffort: turn.result.reasoningEffort,
+          effectiveReasoningEffort: turn.result.effectiveReasoningEffort,
+          modelProvider: turn.result.modelProvider,
+          modelSize: turn.result.modelSize,
+          durationMs: turn.result.durationMs,
+          error: turn.result.error,
+        }
         : undefined,
       prompt: turn.prompt,
       answer: turn.answer,
@@ -2113,7 +2409,13 @@ function sortedJudgeLanes(result: JudgeResult): JudgeResult["lanes"] {
   return graphlit ? [graphlit, ...remaining] : remaining;
 }
 
-function JudgePanel({ judge }: { judge: JudgeUiState }) {
+function JudgePanel({
+  judge,
+  onClose,
+}: {
+  judge: JudgeUiState;
+  onClose: () => void;
+}) {
   if (judge.status === "idle") {
     return null;
   }
@@ -2138,8 +2440,21 @@ function JudgePanel({ judge }: { judge: JudgeUiState }) {
                   : "Scoring failed"}
             </div>
           </div>
-          <div className="font-mono text-xs tabular-nums text-zinc-500">
-            {judge.status}
+          <div className="flex items-center gap-2">
+            <div className="font-mono text-xs tabular-nums text-zinc-500">
+              {judge.status}
+            </div>
+            {judge.status === "completed" || judge.status === "failed" ? (
+              <button
+                type="button"
+                aria-label="Close judge panel"
+                title="Close judge panel"
+                className="flex h-7 w-7 items-center justify-center rounded-md text-zinc-400 transition-colors hover:bg-zinc-100 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
+                onClick={onClose}
+              >
+                <X className="h-4 w-4" />
+              </button>
+            ) : null}
           </div>
         </div>
       </div>
@@ -2149,12 +2464,12 @@ function JudgePanel({ judge }: { judge: JudgeUiState }) {
         </div>
       ) : null}
       {judge.result ? (
-        <div className="grid gap-0 md:grid-cols-[320px_1fr]">
+        <div className="grid gap-0 md:grid-cols-[560px_1fr]">
           <div className="border-b border-zinc-200 p-3 md:border-b-0 md:border-r dark:border-zinc-800">
-            <p className="text-base leading-7 text-zinc-800 dark:text-zinc-200">
+            <p className="text-sm leading-6 text-zinc-800 dark:text-zinc-200">
               {judge.result.summary}
             </p>
-            <p className="mt-2 text-xs leading-5 text-zinc-500">
+            <p className="mt-2 text-sm leading-6 text-zinc-500 dark:text-zinc-400">
               {judge.result.winnerReason}
             </p>
           </div>
@@ -2203,6 +2518,29 @@ function JudgePanel({ judge }: { judge: JudgeUiState }) {
               );
             })}
           </div>
+        </div>
+      ) : null}
+      {judge.result ? (
+        <div className="border-t border-zinc-200 px-3 py-2 text-[11px] leading-4 text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+          <span className="font-semibold text-zinc-700 dark:text-zinc-300">
+            Retrieval
+          </span>{" "}
+          sources retrieved
+          <span className="mx-2 text-zinc-300 dark:text-zinc-700">/</span>
+          <span className="font-semibold text-zinc-700 dark:text-zinc-300">
+            Grounded
+          </span>{" "}
+          claims supported
+          <span className="mx-2 text-zinc-300 dark:text-zinc-700">/</span>
+          <span className="font-semibold text-zinc-700 dark:text-zinc-300">
+            Inspect
+          </span>{" "}
+          source details opened
+          <span className="mx-2 text-zinc-300 dark:text-zinc-700">/</span>
+          <span className="font-semibold text-zinc-700 dark:text-zinc-300">
+            Risk
+          </span>{" "}
+          unsupported-claim risk, lower is better
         </div>
       ) : null}
     </aside>

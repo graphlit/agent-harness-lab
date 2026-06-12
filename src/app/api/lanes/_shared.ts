@@ -5,7 +5,9 @@ import {
   DEFAULT_MODEL_SIZE,
   DEFAULT_MODEL_PROVIDER,
   DEFAULT_REASONING_EFFORT,
+  DEFAULT_SYSTEM_PROMPT_ENABLED,
   LANE_LABELS,
+  SYSTEM_PROMPT,
 } from "@/lib/constants";
 import {
   type LabRunEvent,
@@ -33,6 +35,7 @@ const LaneRunRequestSchema = z.object({
     .enum(["openai", "anthropic", "google"])
     .default(DEFAULT_MODEL_PROVIDER),
   modelSize: z.enum(["large", "small"]).default(DEFAULT_MODEL_SIZE),
+  systemPromptEnabled: z.boolean().default(DEFAULT_SYSTEM_PROMPT_ENABLED),
   laneSession: z.record(z.string(), z.unknown()).default({}),
 });
 
@@ -148,6 +151,7 @@ export function createLaneRoute(laneId: LaneId, loadLaneRunner: LaneRunnerLoader
     const modelProvider = parsed.data
       .modelProvider as ModelProviderPreference;
     const modelSize = parsed.data.modelSize as ModelSize;
+    const systemPromptEnabled = parsed.data.systemPromptEnabled;
     const laneSession = parsed.data.laneSession as LaneSessionState;
 
     logLaneRoute(laneId, "request.received", {
@@ -157,6 +161,7 @@ export function createLaneRoute(laneId: LaneId, loadLaneRunner: LaneRunnerLoader
       reasoningEffort,
       modelProvider,
       modelSize,
+      systemPromptEnabled,
     });
 
     const stream = createNdjsonStream(async (emit) => {
@@ -201,6 +206,7 @@ export function createLaneRoute(laneId: LaneId, loadLaneRunner: LaneRunnerLoader
             modelSize,
             modelProvider,
             reasoningEffort,
+            systemPromptEnabled,
           },
         });
         logLaneRoute(laneId, "lane.invoke.start", { runId, turnId });
@@ -218,6 +224,7 @@ export function createLaneRoute(laneId: LaneId, loadLaneRunner: LaneRunnerLoader
               reasoningEffort,
               modelProvider,
               modelSize,
+              systemPrompt: systemPromptEnabled ? SYSTEM_PROMPT : undefined,
               emit,
               abortSignal,
               laneSession,

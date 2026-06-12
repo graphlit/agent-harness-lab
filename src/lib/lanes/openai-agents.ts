@@ -1,6 +1,6 @@
 import "server-only";
 
-import { OPENAI_MODELS, SYSTEM_PROMPT } from "@/lib/constants";
+import { OPENAI_MODELS } from "@/lib/constants";
 import { createGraphlitClient } from "@/lib/graphlit/client";
 import { LaneRunRecorder } from "@/lib/lanes/recorder";
 import type { LaneRunContext, LaneRunResult } from "@/lib/types";
@@ -91,7 +91,7 @@ export async function runOpenAiAgentsLane(
     const agent = new Agent({
       name: "Graphlit Knowledge Agent",
       model: OPENAI_MODELS[context.modelSize],
-      instructions: SYSTEM_PROMPT,
+      instructions: context.systemPrompt,
       tools: openaiTools,
       modelSettings: {
         reasoning: {

@@ -5,7 +5,6 @@ import { GoogleGenAI } from "@google/genai";
 import OpenAI from "openai";
 import type { AgentStreamEvent } from "graphlit-client";
 
-import { SYSTEM_PROMPT } from "@/lib/constants";
 import { createGraphlitClient } from "@/lib/graphlit/client";
 import { LaneRunRecorder } from "@/lib/lanes/recorder";
 import { requireModelProviderApiKey } from "@/lib/model-provider-keys";
@@ -192,7 +191,7 @@ export async function runGraphlitLane(
       undefined,
       undefined,
       undefined,
-      SYSTEM_PROMPT,
+      context.systemPrompt,
     );
     const completeEvent = {
       phase: "graphlit.streamAgent.complete",

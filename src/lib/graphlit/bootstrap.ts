@@ -16,7 +16,6 @@ import {
   GRAPHLIT_SPEC_NAMES,
   JUDGE_SPEC_NAME,
   MODEL_PROVIDER_PREFERENCES,
-  SYSTEM_PROMPT,
 } from "@/lib/constants";
 import {
   LANE_IDS,
@@ -36,7 +35,11 @@ import {
   getGraphlitClientDiagnostics,
   getGraphlitCredentialError,
 } from "@/lib/graphlit/client";
-import { hasAnyModelProviderApiKey } from "@/lib/model-provider-keys";
+import {
+  getModelProviderApiKey,
+  hasAnyModelProviderApiKey,
+  modelProviderKeyName,
+} from "@/lib/model-provider-keys";
 
 const BOOTSTRAP_STATE_DIR = ".graphlit-agent-harness-lab";
 const BOOTSTRAP_STATE_FILE = "bootstrap-state.json";
@@ -122,10 +125,20 @@ function configuredDefaultReasoningEffort(): ReasoningEffort {
 
 function configuredDefaultModelProvider(): ModelProviderPreference {
   const value = process.env.AGENT_HARNESS_LAB_MODEL_PROVIDER;
+  const configured =
+    value === "openai" || value === "anthropic" || value === "google"
+      ? value
+      : DEFAULT_MODEL_PROVIDER;
+  const configuredHasKey = Boolean(getModelProviderApiKey(configured));
 
-  return value === "openai" || value === "anthropic" || value === "google"
-    ? value
-    : DEFAULT_MODEL_PROVIDER;
+  if (configuredHasKey) {
+    return configured;
+  }
+
+  return (
+    MODEL_PROVIDERS.find((provider) => getModelProviderApiKey(provider)) ??
+    configured
+  );
 }
 
 function configuredDefaultModelSize(): ModelSize {
@@ -259,7 +272,7 @@ function buildGraphlitSpecification(
   const base = {
     name: GRAPHLIT_SPEC_NAMES[provider][modelSize][effort],
     type: Types.SpecificationTypes.Agentic,
-    systemPrompt: SYSTEM_PROMPT,
+    systemPrompt: null,
     searchType: Types.ConversationSearchTypes.None,
     strategy: {
       enableSummarization: true,
@@ -410,6 +423,23 @@ function buildLaneReadiness(graphlitReady: boolean): BootstrapStatus["lanes"] {
   };
 }
 
+function buildModelProviderReadiness(): BootstrapStatus["modelProviders"] {
+  return Object.fromEntries(
+    MODEL_PROVIDERS.map((provider) => {
+      const keyName = modelProviderKeyName(provider);
+      const enabled = Boolean(getModelProviderApiKey(provider));
+
+      return [
+        provider,
+        {
+          enabled,
+          reason: enabled ? undefined : `${keyName} is required.`,
+        },
+      ];
+    }),
+  ) as BootstrapStatus["modelProviders"];
+}
+
 function normalizeDefaultLanes(
   lanes: BootstrapStatus["lanes"],
 ): BootstrapStatus["lanes"] {
@@ -498,6 +528,7 @@ async function runBootstrapAgentHarnessLab(): Promise<BootstrapStatus> {
       rebootstrapPerformed: false,
       warning: readWarning,
       graphlit: { ready: false, error: credentialError },
+      modelProviders: buildModelProviderReadiness(),
       specifications: storedState.specifications,
       lanes,
       judge: { enabled: false, reason: credentialError },
@@ -537,6 +568,7 @@ async function runBootstrapAgentHarnessLab(): Promise<BootstrapStatus> {
       rebootstrapPerformed: false,
       warning: readWarning,
       graphlit: { ready: false, error: message },
+      modelProviders: buildModelProviderReadiness(),
       specifications: storedState.specifications,
       lanes,
       judge: { enabled: false, reason: message },
@@ -574,6 +606,7 @@ async function runBootstrapAgentHarnessLab(): Promise<BootstrapStatus> {
       rebootstrapPerformed: false,
       warning: readWarning,
       graphlit: { ready: true },
+      modelProviders: buildModelProviderReadiness(),
       specifications: storedState.specifications,
       lanes,
       judge: { enabled: true },
@@ -655,6 +688,7 @@ async function runBootstrapAgentHarnessLab(): Promise<BootstrapStatus> {
       rebootstrapPerformed: true,
       warning: [readWarning, writeWarning].filter(Boolean).join(" ") || undefined,
       graphlit: { ready: true },
+      modelProviders: buildModelProviderReadiness(),
       specifications: nextState.specifications,
       lanes,
       judge: { enabled: true },
@@ -678,6 +712,7 @@ async function runBootstrapAgentHarnessLab(): Promise<BootstrapStatus> {
       rebootstrapPerformed: false,
       warning: readWarning,
       graphlit: { ready: false, error: message },
+      modelProviders: buildModelProviderReadiness(),
       specifications: storedState.specifications,
       lanes,
       judge: { enabled: false, reason: message },

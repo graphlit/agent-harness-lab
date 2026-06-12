@@ -1,6 +1,6 @@
 import "server-only";
 
-import { MODEL_PROVIDER_MODEL_IDS, SYSTEM_PROMPT } from "@/lib/constants";
+import { MODEL_PROVIDER_MODEL_IDS } from "@/lib/constants";
 import { createGraphlitClient } from "@/lib/graphlit/client";
 import { LaneRunRecorder } from "@/lib/lanes/recorder";
 import { requireModelProviderApiKey } from "@/lib/model-provider-keys";
@@ -191,7 +191,7 @@ export async function runMastraLane(
     const agent = new Agent({
       id: "graphlit-knowledge-agent",
       name: "Graphlit Knowledge Agent",
-      instructions: SYSTEM_PROMPT,
+      instructions: context.systemPrompt ?? "",
       model,
       tools,
       memory,

@@ -1,9 +1,6 @@
 import "server-only";
 
-import {
-  GOOGLE_MODELS,
-  SYSTEM_PROMPT,
-} from "@/lib/constants";
+import { GOOGLE_MODELS } from "@/lib/constants";
 import { createGraphlitClient } from "@/lib/graphlit/client";
 import { LaneRunRecorder } from "@/lib/lanes/recorder";
 import { createGraphlitTools } from "@/lib/tools/createGraphlitTools";
@@ -147,7 +144,7 @@ export async function runGoogleLane(
     const agent = new LlmAgent({
       name: "graphlit_knowledge_agent",
       model: GOOGLE_MODELS[context.modelSize],
-      instruction: SYSTEM_PROMPT,
+      instruction: context.systemPrompt,
       tools,
       includeContents: "default",
       generateContentConfig: {

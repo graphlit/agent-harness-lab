@@ -128,6 +128,7 @@ export interface RunRequest {
   reasoningEffort?: ReasoningEffort;
   modelProvider?: ModelProviderPreference;
   modelSize?: ModelSize;
+  systemPromptEnabled?: boolean;
   laneSessions?: Partial<Record<LaneId, LaneSessionState>>;
 }
 
@@ -168,6 +169,10 @@ export interface BootstrapStatus {
   rebootstrapPerformed: boolean;
   warning?: string;
   graphlit: { ready: boolean; error?: string };
+  modelProviders: Record<
+    ModelProviderPreference,
+    { enabled: boolean; reason?: string }
+  >;
   specifications: {
     graphlit?: Partial<GraphlitProviderSpecifications>;
     judge?: BootstrapSpecificationRef;
@@ -262,6 +267,7 @@ export interface LaneRunContext {
   reasoningEffort: ReasoningEffort;
   modelProvider: ModelProviderPreference;
   modelSize: ModelSize;
+  systemPrompt?: string;
   emit: RunEventEmitter;
   abortSignal?: AbortSignal;
   laneSession?: LaneSessionState;

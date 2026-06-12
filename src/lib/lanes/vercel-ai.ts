@@ -1,6 +1,6 @@
 import "server-only";
 
-import { MODEL_PROVIDER_MODEL_IDS, SYSTEM_PROMPT } from "@/lib/constants";
+import { MODEL_PROVIDER_MODEL_IDS } from "@/lib/constants";
 import { createGraphlitClient } from "@/lib/graphlit/client";
 import { LaneRunRecorder } from "@/lib/lanes/recorder";
 import { requireModelProviderApiKey } from "@/lib/model-provider-keys";
@@ -129,7 +129,7 @@ export async function runVercelAiLane(
     const agent = new ToolLoopAgent({
       id: "graphlit-knowledge-agent",
       model,
-      instructions: SYSTEM_PROMPT,
+      instructions: context.systemPrompt,
       tools,
       stopWhen: stepCountIs(8),
       providerOptions:

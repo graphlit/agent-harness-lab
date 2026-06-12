@@ -1,6 +1,6 @@
 import "server-only";
 
-import { MODEL_PROVIDER_MODEL_IDS, SYSTEM_PROMPT } from "@/lib/constants";
+import { MODEL_PROVIDER_MODEL_IDS } from "@/lib/constants";
 import { createGraphlitClient } from "@/lib/graphlit/client";
 import { LaneRunRecorder } from "@/lib/lanes/recorder";
 import { requireModelProviderApiKey } from "@/lib/model-provider-keys";
@@ -232,7 +232,7 @@ export async function runLangGraphLane(
       name: "graphlit-knowledge-agent",
       model,
       tools: langGraphTools,
-      systemPrompt: SYSTEM_PROMPT,
+      systemPrompt: context.systemPrompt,
     });
 
     recorder.mergeSession({ langGraphThreadId: threadId });
