@@ -1,0 +1,11 @@
+.next/
+node_modules/
+dist/
+coverage/
+.env
+.env*.local
+.graphlit-agent-harness-lab/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*

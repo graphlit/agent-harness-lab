@@ -1,0 +1,202 @@
+import "server-only";
+
+import type {
+  AnyZodRawShape,
+  SdkMcpToolDefinition,
+} from "@anthropic-ai/claude-agent-sdk";
+
+import { CLAUDE_MODELS, SYSTEM_PROMPT } from "@/lib/constants";
+import { createGraphlitClient } from "@/lib/graphlit/client";
+import { LaneRunRecorder } from "@/lib/lanes/recorder";
+import type { LaneRunContext, LaneRunResult } from "@/lib/types";
+import { errorMessage } from "@/lib/utils";
+import { createGraphlitTools } from "@/lib/tools/createGraphlitTools";
+import { recordGraphlitToolCall } from "@/lib/tools/recordTool";
+import { getZodRawShape } from "@/lib/tools/types";
+
+function extractClaudeText(message: unknown): string {
+  if (!message || typeof message !== "object") {
+    return "";
+  }
+
+  if (
+    "type" in message &&
+    message.type === "result" &&
+    "subtype" in message &&
+    message.subtype === "success" &&
+    "result" in message
+  ) {
+    return typeof message.result === "string"
+      ? message.result
+      : JSON.stringify(message.result ?? "");
+  }
+
+  if ("message" in message && typeof message.message === "object") {
+    return extractClaudeText(message.message);
+  }
+
+  if ("content" in message && Array.isArray(message.content)) {
+    return message.content
+      .map((item) => {
+        if (item && typeof item === "object" && "text" in item) {
+          return typeof item.text === "string" ? item.text : "";
+        }
+
+        return "";
+      })
+      .join("");
+  }
+
+  return "";
+}
+
+function structuredToolContent(result: unknown): Record<string, unknown> {
+  if (result && typeof result === "object" && !Array.isArray(result)) {
+    return result as Record<string, unknown>;
+  }
+
+  return { result };
+}
+
+function readClaudeSessionId(message: unknown): string | undefined {
+  if (
+    message &&
+    typeof message === "object" &&
+    "type" in message &&
+    message.type === "system" &&
+    "subtype" in message &&
+    message.subtype === "init" &&
+    "session_id" in message &&
+    typeof message.session_id === "string"
+  ) {
+    return message.session_id;
+  }
+
+  return undefined;
+}
+
+export async function runClaudeLane(
+  context: LaneRunContext,
+): Promise<LaneRunResult> {
+  if (!process.env.ANTHROPIC_API_KEY) {
+    throw new Error("ANTHROPIC_API_KEY is required for the Claude lane.");
+  }
+
+  const recorder = new LaneRunRecorder({
+    laneId: "claude",
+    runId: context.runId,
+    turnId: context.turnId,
+    prompt: context.prompt,
+    reasoningEffort: context.reasoningEffort,
+    modelSize: context.modelSize,
+    emit: context.emit,
+  });
+  recorder.setSession(context.laneSession ?? {});
+  const client = createGraphlitClient();
+  const graphlitTools = createGraphlitTools(client).map((item) =>
+    recordGraphlitToolCall(item, recorder),
+  );
+
+  try {
+    await context.emit({
+      type: "lane_trace",
+      runId: context.runId,
+      turnId: context.turnId,
+      laneId: "claude",
+      event: { phase: "claude.sdk.import.start" },
+    });
+    const { createSdkMcpServer, query, tool } = await import(
+      "@anthropic-ai/claude-agent-sdk"
+    );
+    await context.emit({
+      type: "lane_trace",
+      runId: context.runId,
+      turnId: context.turnId,
+      laneId: "claude",
+      event: { phase: "claude.sdk.import.complete" },
+    });
+    const claudeTools: SdkMcpToolDefinition[] = graphlitTools.map((item) =>
+      tool(
+        item.tool.name,
+        item.tool.description ?? `Run ${item.tool.name}.`,
+        getZodRawShape(item.inputSchema) as AnyZodRawShape,
+        async (args: unknown) => {
+          const result = await item.handler(
+            args,
+            undefined,
+            context.abortSignal,
+          );
+
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify(result) }],
+            structuredContent: structuredToolContent(result),
+          };
+        },
+        { annotations: { readOnlyHint: true, openWorldHint: true } },
+      ),
+    );
+    const graphlitServer = createSdkMcpServer({
+      name: "graphlit",
+      version: "1.0.0",
+      tools: claudeTools,
+    });
+    const agentName = "graphlit-knowledge-agent";
+    const allowedTools = graphlitTools.map(
+      (item) => `mcp__graphlit__${item.tool.name}`,
+    );
+    const requestedSessionId =
+      context.laneSession?.claudeSessionId ?? crypto.randomUUID();
+    let claudeSessionId = context.laneSession?.claudeSessionId;
+    let finalText = "";
+
+    for await (const message of query({
+      prompt: context.prompt,
+      options: {
+        agent: agentName,
+        agents: {
+          [agentName]: {
+            description:
+              "Answers questions using Graphlit retrieval and source inspection tools.",
+            prompt: SYSTEM_PROMPT,
+            tools: allowedTools,
+            model: CLAUDE_MODELS[context.modelSize],
+            effort: context.reasoningEffort,
+            maxTurns: 8,
+            permissionMode: "dontAsk",
+          },
+        },
+        model: CLAUDE_MODELS[context.modelSize],
+        mcpServers: { graphlit: graphlitServer },
+        tools: [],
+        allowedTools,
+        maxTurns: 8,
+        permissionMode: "dontAsk",
+        effort: context.reasoningEffort,
+        ...(claudeSessionId
+          ? { resume: claudeSessionId }
+          : { sessionId: requestedSessionId }),
+      },
+    } as never)) {
+      recorder.recordRaw(message);
+      claudeSessionId = readClaudeSessionId(message) ?? claudeSessionId;
+      const text = extractClaudeText(message);
+
+      if (text) {
+        finalText = text;
+        await recorder.emitSnapshot(finalText);
+      }
+    }
+
+    if (!recorder.getAnswer() && finalText) {
+      await recorder.emitSnapshot(finalText);
+    }
+
+    recorder.mergeSession({
+      claudeSessionId: claudeSessionId ?? requestedSessionId,
+    });
+
+    return recorder.result();
+  } catch (error) {
+    return recorder.result(errorMessage(error));
+  }
+}

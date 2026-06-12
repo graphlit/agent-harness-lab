@@ -1,0 +1,84 @@
+@config "../../tailwind.config.ts";
+@import "tailwindcss";
+
+:root {
+  color-scheme: light;
+  --trace-json-main: #3f3f46;
+  --trace-json-key: #2563eb;
+  --trace-json-string: #047857;
+  --trace-json-value: #7c2d12;
+  --trace-json-boolean: #9333ea;
+  --trace-json-null: #71717a;
+}
+
+:root.dark {
+  color-scheme: dark;
+  --trace-json-main: #a1a1aa;
+  --trace-json-key: #93c5fd;
+  --trace-json-string: #86efac;
+  --trace-json-value: #fdba74;
+  --trace-json-boolean: #c4b5fd;
+  --trace-json-null: #71717a;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background: #fafafa;
+  color: #18181b;
+  font-family: var(--font-geist-sans), -apple-system, BlinkMacSystemFont,
+    "Segoe UI", sans-serif;
+  transition:
+    background-color 200ms ease,
+    color 200ms ease;
+}
+
+:root.dark body {
+  background: #09090b;
+  color: #d4d4d8;
+}
+
+button,
+textarea {
+  font: inherit;
+}
+
+.font-mono,
+code,
+kbd,
+pre,
+samp {
+  font-family: var(--font-geist-mono), "SFMono-Regular", Consolas,
+    "Liberation Mono", monospace;
+}
+
+pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.hide-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.hide-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.scrollbar-none {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}

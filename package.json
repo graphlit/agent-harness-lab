@@ -1,0 +1,52 @@
+{
+  "name": "agent-harness-lab",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "npm": ">=9.6.7",
+    "node": ">=20.9.0"
+  },
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "check-types": "tsc --noEmit",
+    "format": "prettier --write ."
+  },
+  "dependencies": {
+    "@ai-sdk/openai": "^3.0.71",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.175",
+    "@google/adk": "^1.2.0",
+    "@graphlit/agent-tools": "^1.0.20260611004",
+    "@mastra/core": "^1.42.0",
+    "@mastra/libsql": "^1.13.0",
+    "@mastra/memory": "^1.20.3",
+    "@openai/agents": "^0.11.6",
+    "geist": "^1.5.1",
+    "graphlit-client": "^1",
+    "lucide-react": "^1.18.0",
+    "next": "^16.2.9",
+    "openai": "^6.33.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "react-json-pretty": "^2.2.0",
+    "react-markdown": "^10.1.0",
+    "remark-breaks": "^4.0.0",
+    "remark-gfm": "^4.0.1",
+    "zod": "^4"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.1",
+    "@types/node": "^25.9.3",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "autoprefixer": "^10",
+    "eslint": "^10.5.0",
+    "eslint-config-next": "^16.2.9",
+    "postcss": "^8",
+    "tailwindcss": "^4.3.1",
+    "typescript": "^6.0.3"
+  }
+}
