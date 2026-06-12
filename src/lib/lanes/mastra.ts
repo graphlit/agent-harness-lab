@@ -1,8 +1,9 @@
 import "server-only";
 
-import { MASTRA_MODEL_IDS, SYSTEM_PROMPT } from "@/lib/constants";
+import { MODEL_PROVIDER_MODEL_IDS, SYSTEM_PROMPT } from "@/lib/constants";
 import { createGraphlitClient } from "@/lib/graphlit/client";
 import { LaneRunRecorder } from "@/lib/lanes/recorder";
+import { requireModelProviderApiKey } from "@/lib/model-provider-keys";
 import type { LaneRunContext, LaneRunResult } from "@/lib/types";
 import { errorMessage } from "@/lib/utils";
 import { createGraphlitTools } from "@/lib/tools/createGraphlitTools";
@@ -78,16 +79,13 @@ function mastraOutputText(result: unknown): string {
 export async function runMastraLane(
   context: LaneRunContext,
 ): Promise<LaneRunResult> {
-  if (!process.env.OPENAI_API_KEY) {
-    throw new Error("OPENAI_API_KEY is required for the Mastra lane.");
-  }
-
   const recorder = new LaneRunRecorder({
     laneId: "mastra",
     runId: context.runId,
     turnId: context.turnId,
     prompt: context.prompt,
     reasoningEffort: context.reasoningEffort,
+    modelProvider: context.modelProvider,
     modelSize: context.modelSize,
     emit: context.emit,
   });
@@ -138,10 +136,9 @@ export async function runMastraLane(
       runId: context.runId,
       turnId: context.turnId,
     });
-    const [{ Agent }, { createTool }, { openai }] = await Promise.all([
+    const [{ Agent }, { createTool }] = await Promise.all([
       import("@mastra/core/agent"),
       import("@mastra/core/tools"),
-      import("@ai-sdk/openai"),
     ]);
     logMastraLane("sdk.import.complete", {
       runId: context.runId,
@@ -160,7 +157,7 @@ export async function runMastraLane(
         createTool({
           id: item.tool.name,
           description: item.tool.description ?? `Run ${item.tool.name}.`,
-          inputSchema: item.inputSchema,
+          inputSchema: item.inputSchema as never,
           execute: async (
             args: unknown,
             execContext?: { abortSignal?: AbortSignal },
@@ -173,11 +170,29 @@ export async function runMastraLane(
         }),
       ]),
     );
+    const modelId = MODEL_PROVIDER_MODEL_IDS[context.modelProvider][
+      context.modelSize
+    ];
+    const model =
+      context.modelProvider === "anthropic"
+        ? (await import("@ai-sdk/anthropic")).createAnthropic({
+            apiKey: requireModelProviderApiKey(
+              "anthropic",
+              "the Mastra lane",
+            ),
+          })(modelId)
+        : context.modelProvider === "google"
+          ? (await import("@ai-sdk/google")).createGoogleGenerativeAI({
+              apiKey: requireModelProviderApiKey("google", "the Mastra lane"),
+            })(modelId)
+          : (await import("@ai-sdk/openai")).createOpenAI({
+              apiKey: requireModelProviderApiKey("openai", "the Mastra lane"),
+            })(modelId);
     const agent = new Agent({
       id: "graphlit-knowledge-agent",
       name: "Graphlit Knowledge Agent",
       instructions: SYSTEM_PROMPT,
-      model: openai(MASTRA_MODEL_IDS[context.modelSize].replace("openai/", "")),
+      model,
       tools,
       memory,
     });
@@ -188,7 +203,8 @@ export async function runMastraLane(
     logMastraLane("generate.start", {
       runId: context.runId,
       turnId: context.turnId,
-      model: MASTRA_MODEL_IDS[context.modelSize],
+      model: modelId,
+      modelProvider: context.modelProvider,
       resourceId,
       threadId,
       toolCount: Object.keys(tools).length,

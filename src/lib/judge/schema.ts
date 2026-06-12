@@ -49,8 +49,16 @@ export const scoreAgentHarnessRunJsonSchema = {
       description:
         "Anonymous lane ID of the best response. Use an empty string when there is no winner.",
     },
-    winnerReason: { type: "string" },
-    summary: { type: "string" },
+    winnerReason: {
+      type: "string",
+      description:
+        "Human-readable reason for the winner. Use friendly lane names from laneNameMap, never anonymous labels like Lane A or Lane B.",
+    },
+    summary: {
+      type: "string",
+      description:
+        "Human-readable summary. Use friendly lane names from laneNameMap, never anonymous labels like Lane A or Lane B.",
+    },
     lanes: {
       type: "array",
       items: {
@@ -63,9 +71,24 @@ export const scoreAgentHarnessRunJsonSchema = {
           groundedness: { type: "integer", minimum: 0, maximum: 5 },
           answerHelpfulness: { type: "integer", minimum: 0, maximum: 5 },
           unsupportedClaimRisk: { type: "integer", minimum: 0, maximum: 5 },
-          traceEvidence: { type: "array", items: { type: "string" } },
-          strengths: { type: "array", items: { type: "string" } },
-          weaknesses: { type: "array", items: { type: "string" } },
+          traceEvidence: {
+            type: "array",
+            items: { type: "string" },
+            description:
+              "Evidence notes for this lane. Use the friendly lane name, never anonymous labels like Lane A or Lane B.",
+          },
+          strengths: {
+            type: "array",
+            items: { type: "string" },
+            description:
+              "Strength notes for this lane. Use the friendly lane name, never anonymous labels like Lane A or Lane B.",
+          },
+          weaknesses: {
+            type: "array",
+            items: { type: "string" },
+            description:
+              "Weakness notes for this lane. Use the friendly lane name, never anonymous labels like Lane A or Lane B.",
+          },
         },
         required: [
           "anonymousId",
@@ -96,7 +119,11 @@ export const scoreAgentHarnessRunJsonSchema = {
             description:
               "Anonymous lane ID of the worse response. Use an empty string when there is no worse lane.",
           },
-          reason: { type: "string" },
+          reason: {
+            type: "string",
+            description:
+              "Human-readable comparison reason. Use friendly lane names from laneNameMap, never anonymous labels like Lane A or Lane B.",
+          },
         },
         required: ["betterAnonymousId", "worseAnonymousId", "reason"],
       },

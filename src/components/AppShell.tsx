@@ -1,9 +1,8 @@
 "use client";
 
 import {
-  Activity,
-  CheckCircle2,
-  CircleAlert,
+  Clock,
+  Hash,
   Loader2,
   Moon,
   RotateCcw,
@@ -11,7 +10,7 @@ import {
   Sun,
 } from "lucide-react";
 import type { KeyboardEvent, ReactNode, RefObject } from "react";
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import JSONPretty from "react-json-pretty";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import type { Components } from "react-markdown";
@@ -21,10 +20,14 @@ import remarkGfm from "remark-gfm";
 import { BrandIcon } from "@/components/BrandIcon";
 import {
   DEFAULT_LANES,
+  DEFAULT_MODEL_PROVIDER,
   DEFAULT_MODEL_SIZE,
   DEFAULT_REASONING_EFFORT,
   LANE_LABELS,
-  LANE_MODEL_LABELS,
+  MODEL_PROVIDER_LABELS,
+  MODEL_PROVIDER_PREFERENCES,
+  getLaneModelLabel,
+  titleCaseEffort,
 } from "@/lib/constants";
 import {
   LANE_IDS,
@@ -35,6 +38,7 @@ import {
   type LaneRunResult,
   type LaneSessionState,
   type LaneStatus,
+  type ModelProviderPreference,
   type ModelSize,
   type ReasoningEffort,
   type SourceTrace,
@@ -330,16 +334,130 @@ function statusTone(status: LaneStatus): string {
 }
 
 function formatElapsedMs(ms: number): string {
-  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const secondsValue = Math.max(0, ms / 1000);
+  const totalSeconds = Math.floor(secondsValue);
 
   if (totalSeconds < 60) {
-    return `${totalSeconds}s`;
+    return `${secondsValue.toFixed(1)}s`;
   }
 
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
 
   return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+}
+
+function formatTokenCount(value: number | null): string {
+  return value === null ? "— TKN" : `${value.toLocaleString()} TKN`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function numericField(
+  value: Record<string, unknown>,
+  keys: string[],
+): number | null {
+  for (const key of keys) {
+    const item = value[key];
+
+    if (typeof item === "number" && Number.isFinite(item)) {
+      return item;
+    }
+  }
+
+  return null;
+}
+
+function directTokenCount(value: unknown): number | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const total = numericField(value, [
+    "total_tokens",
+    "totalTokens",
+    "totalTokenCount",
+    "total_tokens_count",
+  ]);
+
+  if (total !== null) {
+    return total;
+  }
+
+  const input = numericField(value, [
+    "input_tokens",
+    "inputTokens",
+    "prompt_tokens",
+    "promptTokens",
+  ]);
+  const output = numericField(value, [
+    "output_tokens",
+    "outputTokens",
+    "completion_tokens",
+    "completionTokens",
+  ]);
+
+  if (input !== null || output !== null) {
+    return (input ?? 0) + (output ?? 0);
+  }
+
+  return null;
+}
+
+function extractTokenCount(value: unknown, depth = 0): number | null {
+  if (depth > 6 || value === null || value === undefined) {
+    return null;
+  }
+
+  const direct = directTokenCount(value);
+
+  if (direct !== null) {
+    return direct;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const count = extractTokenCount(item, depth + 1);
+
+      if (count !== null) {
+        return count;
+      }
+    }
+
+    return null;
+  }
+
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  for (const key of ["usage", "usageMetadata", "tokenUsage", "metrics"]) {
+    const count = extractTokenCount(value[key], depth + 1);
+
+    if (count !== null) {
+      return count;
+    }
+  }
+
+  for (const item of Object.values(value)) {
+    const count = extractTokenCount(item, depth + 1);
+
+    if (count !== null) {
+      return count;
+    }
+  }
+
+  return null;
+}
+
+function turnTokenCount(turn: LaneTurnUiState): number | null {
+  return (
+    extractTokenCount(turn.result) ??
+    extractTokenCount(turn.rawEvents) ??
+    null
+  );
 }
 
 function turnElapsedMs(turn: LaneTurnUiState, nowMs: number): number {
@@ -353,28 +471,6 @@ function turnElapsedMs(turn: LaneTurnUiState, nowMs: number): number {
   return Math.max(0, endedAt - startedAt);
 }
 
-function turnStatusText(turn: LaneTurnUiState, nowMs: number): string {
-  return `${turn.status.replace("_", " ")} ${formatElapsedMs(
-    turnElapsedMs(turn, nowMs),
-  )}`;
-}
-
-function StatusIcon({ status }: { status: LaneStatus }) {
-  if (status === "completed") {
-    return <CheckCircle2 className="h-3 w-3" />;
-  }
-
-  if (status === "failed") {
-    return <CircleAlert className="h-3 w-3" />;
-  }
-
-  if (status === "running" || status === "tool_calling") {
-    return <Loader2 className="h-3 w-3 animate-spin" />;
-  }
-
-  return <Activity className="h-3 w-3" />;
-}
-
 function laneIconName(laneId: LaneId): Parameters<typeof BrandIcon>[0]["name"] {
   if (laneId === "graphlit") {
     return "graphlit";
@@ -385,6 +481,16 @@ function laneIconName(laneId: LaneId): Parameters<typeof BrandIcon>[0]["name"] {
   }
 
   return laneId;
+}
+
+function providerIconName(
+  provider: ModelProviderPreference,
+): Parameters<typeof BrandIcon>[0]["name"] {
+  if (provider === "anthropic") {
+    return "claude";
+  }
+
+  return provider;
 }
 
 const answerMarkdownComponents: Components = {
@@ -591,10 +697,14 @@ export function AppShell() {
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>(
     DEFAULT_REASONING_EFFORT,
   );
+  const [modelProvider, setModelProvider] = useState<ModelProviderPreference>(
+    DEFAULT_MODEL_PROVIDER,
+  );
   const [modelSize, setModelSize] = useState<ModelSize>(DEFAULT_MODEL_SIZE);
   const [judgeEnabled, setJudgeEnabled] = useState(true);
   const [judge, setJudge] = useState<JudgeUiState>({ status: "idle" });
   const [isRunning, setIsRunning] = useState(false);
+  const [isConsoleCollapsed, setIsConsoleCollapsed] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [colorTheme, setColorTheme] = useState<ColorTheme>("dark");
   const promptRef = useRef<HTMLTextAreaElement>(null);
@@ -675,6 +785,7 @@ export function AppShell() {
           const status = result.body as BootstrapStatus;
           setBootstrap(status);
           setReasoningEffort(status.defaultReasoningEffort);
+          setModelProvider(status.defaultModelProvider);
           setModelSize(status.defaultModelSize);
           const nextEnabled = defaultEnabledLanes(status);
           setEnabledLanes(nextEnabled);
@@ -747,7 +858,13 @@ export function AppShell() {
   }
 
   function handlePromptKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+    const isSubmitShortcut =
+      (event.metaKey || event.ctrlKey) &&
+      (event.key === "Enter" ||
+        event.code === "Enter" ||
+        event.code === "NumpadEnter");
+
+    if (isSubmitShortcut) {
       event.preventDefault();
       void runComparison();
       return;
@@ -827,6 +944,7 @@ export function AppShell() {
         turnId: event.turnId,
         result: event.result,
       });
+      setIsConsoleCollapsed(true);
     }
 
     if (event.type === "judge_failed") {
@@ -865,6 +983,7 @@ export function AppShell() {
     setHistoryIndex(-1);
     setHistoryDraft("");
     setIsRunning(true);
+    setIsConsoleCollapsed(false);
     setRunLaneIds(new Set([...priorVisibleLaneIds, ...selectedLanes]));
     setJudge({ status: "idle", turnId });
     setLanes((current) =>
@@ -911,6 +1030,7 @@ export function AppShell() {
             turnId,
             prompt: currentPrompt,
             reasoningEffort,
+            modelProvider,
             modelSize,
             laneSession: laneSessions[laneId],
           }),
@@ -1065,6 +1185,7 @@ export function AppShell() {
               turnId,
               result: body.result,
             });
+            setIsConsoleCollapsed(true);
           } catch (error) {
             if (isAbortError(error)) {
               if (judgeRequest.timedOut()) {
@@ -1142,10 +1263,12 @@ export function AppShell() {
     setReasoningEffort(
       bootstrap?.defaultReasoningEffort ?? DEFAULT_REASONING_EFFORT,
     );
+    setModelProvider(bootstrap?.defaultModelProvider ?? DEFAULT_MODEL_PROVIDER);
     setModelSize(bootstrap?.defaultModelSize ?? DEFAULT_MODEL_SIZE);
     setJudgeEnabled(true);
     setJudge({ status: "idle" });
     setIsRunning(false);
+    setIsConsoleCollapsed(false);
     setEnabledLanes(nextEnabled);
     setRunLaneIds(nextEnabled);
     setLanes(
@@ -1176,7 +1299,7 @@ export function AppShell() {
 
   return (
     <main
-      className="flex h-screen min-h-screen flex-col justify-between bg-zinc-50 text-zinc-900 transition-colors duration-200 dark:bg-[#09090b] dark:text-zinc-100"
+      className="flex h-[100dvh] w-full flex-col overflow-x-hidden bg-zinc-50 text-zinc-900 transition-colors duration-200 dark:bg-[#09090b] dark:text-zinc-100"
     >
       <header
         className="flex w-full shrink-0 items-center justify-between border-b border-zinc-200 bg-white px-6 py-4 transition-colors duration-200 dark:border-zinc-900 dark:bg-[#09090b]"
@@ -1217,51 +1340,47 @@ export function AppShell() {
       </header>
 
       <section
-        className="flex min-h-0 flex-1 overflow-hidden bg-zinc-50 transition-colors duration-200 dark:bg-[#09090b]"
+        className="relative flex min-h-0 w-full flex-1 flex-col overflow-hidden bg-zinc-50 transition-colors duration-200 dark:bg-[#09090b]"
       >
         {laneList.every((lane) => !laneHasTranscript(lane)) ? (
-          <div className="flex h-full flex-1 items-center justify-center px-6 pb-40">
-            <div className="text-center">
-              <div
-                className="mx-auto mb-6 flex h-14 w-14 items-center justify-center rounded-xl border border-blue-200 bg-blue-50/80 shadow-lg transition-colors duration-200 dark:border-blue-900/80 dark:bg-blue-950/40"
-              >
-                <BrandIcon
-                  name="graphlit"
-                  className="h-7 w-7"
-                  alt="Graphlit"
-                />
+          <div className="hide-scrollbar flex min-h-0 w-full flex-1 flex-nowrap snap-x snap-mandatory overflow-x-auto md:snap-none [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+            <div className="flex h-full w-full shrink-0 snap-center flex-col items-center justify-center border-r border-transparent px-6 pb-40 last:border-r-0 md:flex-1 md:shrink md:border-zinc-200 dark:md:border-zinc-800">
+              <div className="text-center">
+                <div
+                  className="mx-auto mb-6 flex h-14 w-14 items-center justify-center rounded-xl border border-blue-200 bg-blue-50/80 shadow-lg transition-colors duration-200 dark:border-blue-900/80 dark:bg-blue-950/40"
+                >
+                  <BrandIcon
+                    name="graphlit"
+                    className="h-7 w-7"
+                    alt="Graphlit"
+                  />
+                </div>
+                <h1 className="text-2xl font-medium tracking-tight text-zinc-900 dark:text-zinc-50">
+                  What do you want to compare?
+                </h1>
+                <p className="mt-2 text-base text-zinc-500">
+                  Send prompts. Watch each agent harness use the same Graphlit tools.
+                </p>
               </div>
-              <h1 className="text-2xl font-medium tracking-tight text-zinc-900 dark:text-zinc-50">
-                What do you want to compare?
-              </h1>
-              <p className="mt-2 text-base text-zinc-500">
-                Ask once. Watch each agent harness use the same Graphlit tools.
-              </p>
             </div>
           </div>
         ) : (
-          <div className="flex h-full flex-1 flex-col">
-            <div className="min-h-0 flex-1 overflow-x-auto">
-              <div
-                className={classNames(
-                  "flex h-full",
-                  visibleLaneList.length > 3 ? "min-w-[1120px]" : "min-w-full",
-                )}
-              >
-                {visibleLaneList.map((lane) => (
-                  <LanePanel
-                    key={lane.id}
-                    lane={lane}
-                    modelSize={modelSize}
-                    nowMs={nowMs}
-                    enabled={enabledLanes.has(lane.id)}
-                    disabledReason={bootstrap?.lanes[lane.id]?.reason}
-                  />
-                ))}
-              </div>
+          <>
+            <div className="hide-scrollbar flex min-h-0 w-full flex-1 flex-nowrap snap-x snap-mandatory overflow-x-auto md:snap-none [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+              {visibleLaneList.map((lane) => (
+                <LanePanel
+                  key={lane.id}
+                  lane={lane}
+                  modelProvider={modelProvider}
+                  modelSize={modelSize}
+                  nowMs={nowMs}
+                  enabled={enabledLanes.has(lane.id)}
+                  disabledReason={bootstrap?.lanes[lane.id]?.reason}
+                />
+              ))}
             </div>
             <JudgePanel judge={judge} />
-          </div>
+          </>
         )}
       </section>
 
@@ -1271,6 +1390,8 @@ export function AppShell() {
         promptRef={promptRef}
         reasoningEffort={reasoningEffort}
         setReasoningEffort={setReasoningEffort}
+        modelProvider={modelProvider}
+        setModelProvider={setModelProvider}
         modelSize={modelSize}
         setModelSize={setModelSize}
         judgeEnabled={judgeEnabled}
@@ -1281,6 +1402,8 @@ export function AppShell() {
         bootstrapError={bootstrapError}
         isRunning={isRunning}
         canRun={canRun}
+        isCollapsed={isConsoleCollapsed}
+        setIsCollapsed={setIsConsoleCollapsed}
         onPromptKeyDown={handlePromptKeyDown}
         onRun={runComparison}
       />
@@ -1311,6 +1434,8 @@ function Composer({
   promptRef,
   reasoningEffort,
   setReasoningEffort,
+  modelProvider,
+  setModelProvider,
   modelSize,
   setModelSize,
   judgeEnabled,
@@ -1321,14 +1446,18 @@ function Composer({
   bootstrapError,
   isRunning,
   canRun,
+  isCollapsed,
+  setIsCollapsed,
   onPromptKeyDown,
   onRun,
 }: {
   prompt: string;
   setPrompt: (value: string) => void;
-  promptRef: RefObject<HTMLTextAreaElement>;
+  promptRef: RefObject<HTMLTextAreaElement | null>;
   reasoningEffort: ReasoningEffort;
   setReasoningEffort: (value: ReasoningEffort) => void;
+  modelProvider: ModelProviderPreference;
+  setModelProvider: (value: ModelProviderPreference) => void;
   modelSize: ModelSize;
   setModelSize: (value: ModelSize) => void;
   judgeEnabled: boolean;
@@ -1339,74 +1468,114 @@ function Composer({
   bootstrapError: string | null;
   isRunning: boolean;
   canRun: boolean;
+  isCollapsed: boolean;
+  setIsCollapsed: (value: boolean) => void;
   onPromptKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
   onRun: () => void;
 }) {
+  const hasPrompt = prompt.trim().length > 0;
   const statusText = bootstrap?.graphlit.ready
     ? "Project bound successfully."
     : (bootstrap?.graphlit.error ?? "Checking Graphlit project...");
   const telemetryText =
     [bootstrapError, bootstrap?.warning, statusText].filter(Boolean).join(" ") ||
     "Ready.";
+  const summaryModelSize = modelSize === "large" ? "Large" : "Small";
+  const summaryText = `Effort: ${titleCaseEffort(reasoningEffort)} • Provider: ${MODEL_PROVIDER_LABELS[modelProvider]} • Model: ${summaryModelSize}`;
 
   return (
-    <footer className="shrink-0 border-t border-zinc-200 bg-zinc-50 pt-4 transition-colors duration-200 dark:border-zinc-900 dark:bg-[#09090b]">
-      <div className="scrollbar-none mx-auto mb-3 flex w-full max-w-4xl items-center gap-6 overflow-x-auto px-4 text-xs text-zinc-500 dark:text-zinc-400">
-        <Segmented
-          label="Effort"
-          values={["low", "medium", "high"]}
-          selected={reasoningEffort}
-          onSelect={(value) => setReasoningEffort(value as ReasoningEffort)}
-          disabled={isRunning}
-        />
-        <Segmented
-          label="Model"
-          values={["large", "small"]}
-          selected={modelSize}
-          onSelect={(value) => setModelSize(value as ModelSize)}
-          disabled={isRunning}
-        />
-        <JudgeSwitch
-          enabled={judgeEnabled}
-          disabled={isRunning}
-          onToggle={() => setJudgeEnabled(!judgeEnabled)}
-        />
-      </div>
-      <div className="mx-auto w-full max-w-4xl shrink-0 px-4 pb-6">
-        <div className="flex flex-col overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-sm transition-colors duration-200 focus-within:border-zinc-400 focus-within:ring-1 focus-within:ring-zinc-400/40 dark:border-zinc-800 dark:bg-zinc-900/20 dark:shadow-none dark:focus-within:border-zinc-700 dark:focus-within:ring-zinc-700/50">
-          <textarea
-            ref={promptRef}
-            value={prompt}
-            onChange={(event) => setPrompt(event.target.value)}
-            onKeyDown={onPromptKeyDown}
-            className="min-h-[110px] w-full resize-none border-none bg-transparent p-4 font-sans text-base text-zinc-900 placeholder:text-zinc-400 focus:ring-0 dark:text-zinc-100 dark:placeholder:text-zinc-600"
-            placeholder="Ask anything..."
-            disabled={isRunning}
-          />
-          <div className="border-t border-zinc-100 dark:border-zinc-900/80" />
-          <div className="flex items-center justify-between gap-4 bg-zinc-50/50 p-3 transition-colors duration-200 dark:bg-zinc-950/40">
-            <div className="scrollbar-none flex items-center gap-2 overflow-x-auto whitespace-nowrap">
-              {LANE_IDS.map((laneId) => {
-                const readiness = bootstrap?.lanes[laneId];
-                const disabled =
-                  laneId === "graphlit" ||
-                  isRunning ||
-                  readiness?.enabled === false;
-                const isGraphlit = laneId === "graphlit";
-                const isEnabled = enabledLanes.has(laneId);
+    <footer className="flex shrink-0 flex-col justify-end border-t border-zinc-200 bg-zinc-50 pt-4 transition-colors duration-200 dark:border-zinc-900 dark:bg-[#09090b]">
+      {isCollapsed ? (
+        <button
+          type="button"
+          className="mx-auto flex w-full max-w-5xl cursor-pointer items-center justify-between rounded-t-xl border border-zinc-200 bg-white p-3 text-left shadow-[0_-10px_40px_rgba(0,0,0,0.05)] transition-all hover:bg-zinc-50 dark:border-zinc-800 dark:bg-[#09090b] dark:hover:bg-zinc-900/50"
+          onClick={() => setIsCollapsed(false)}
+        >
+          <span className="font-mono text-[10px] uppercase text-zinc-500">
+            {summaryText}
+          </span>
+          <span className="shrink-0 rounded-md border border-zinc-200 px-3 py-1 text-sm font-medium text-zinc-700 dark:border-zinc-800 dark:text-zinc-200">
+            + New Prompt
+          </span>
+        </button>
+      ) : (
+        <div className="mx-auto flex w-full max-w-5xl shrink-0 flex-col px-4 pb-4 md:px-6 md:pb-6">
+          <div className="hide-scrollbar mb-4 flex w-full snap-x snap-mandatory items-center justify-start gap-4 overflow-x-auto px-4 pb-2 text-zinc-400 md:justify-center md:gap-6">
+            <Segmented
+              label="Effort"
+              values={["low", "medium", "high"]}
+              selected={reasoningEffort}
+              onSelect={(value) =>
+                setReasoningEffort(value as ReasoningEffort)
+              }
+              disabled={isRunning}
+            />
+            <ProviderPreference
+              selected={modelProvider}
+              onSelect={setModelProvider}
+              disabled={isRunning}
+            />
+            <Segmented
+              label="Model"
+              values={["large", "small"]}
+              selected={modelSize}
+              onSelect={(value) => setModelSize(value as ModelSize)}
+              disabled={isRunning}
+            />
+            <div className="h-6 w-px shrink-0 snap-start bg-zinc-200 dark:bg-zinc-800" />
+            <JudgeSwitch
+              enabled={judgeEnabled}
+              disabled={isRunning}
+              onToggle={() => setJudgeEnabled(!judgeEnabled)}
+            />
+          </div>
+          <div className="flex w-full flex-col overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900/20">
+            <div className="relative flex w-full">
+              <textarea
+                ref={promptRef}
+                value={prompt}
+                onChange={(event) => setPrompt(event.target.value)}
+                onKeyDown={onPromptKeyDown}
+                className="min-h-[90px] w-full resize-none border-none bg-transparent py-3 pl-3 pr-24 text-base text-zinc-900 outline-none placeholder:text-zinc-500 focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0 md:py-4 md:pl-4 md:pr-32 dark:text-zinc-100"
+                placeholder="Ask anything..."
+                disabled={isRunning}
+              />
+              <button
+                type="button"
+                title="Send (Ctrl+Enter)"
+                className={classNames(
+                  "absolute right-4 top-1/2 z-10 flex h-8 shrink-0 -translate-y-1/2 items-center justify-center gap-2 rounded-md border border-transparent bg-zinc-100 px-3 text-sm font-medium text-zinc-900 transition-all duration-200 hover:border-zinc-300 hover:bg-zinc-200 md:h-9 md:px-4 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 dark:hover:border-zinc-500 dark:hover:bg-zinc-700",
+                  hasPrompt
+                    ? "cursor-pointer opacity-100 shadow-sm"
+                    : "cursor-not-allowed opacity-40 shadow-none grayscale",
+                )}
+                onClick={() => void onRun()}
+                disabled={!canRun}
+              >
+                {isRunning ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Send className="h-4 w-4" />
+                )}
+                Send
+              </button>
+            </div>
+            <div className="flex w-full items-center gap-3 overflow-hidden border-t border-zinc-200 bg-zinc-50/50 p-2 md:gap-4 md:p-3 dark:border-zinc-800 dark:bg-zinc-950/40">
+              <div className="flex shrink-0 items-center gap-4">
+                {(() => {
+                  const laneId: LaneId = "graphlit";
+                  const readiness = bootstrap?.lanes[laneId];
+                  const disabled =
+                    laneId === "graphlit" ||
+                    isRunning ||
+                    readiness?.enabled === false;
 
-                return (
-                  <Fragment key={laneId}>
+                  return (
                     <button
                       type="button"
                       className={classNames(
-                        "group flex shrink-0 items-center gap-2 whitespace-nowrap rounded-md px-3 py-1.5 text-xs transition-all duration-150",
-                        isGraphlit
-                          ? "border border-blue-200 bg-blue-50/80 font-semibold text-blue-700 dark:border-blue-900/80 dark:bg-blue-950/40 dark:text-blue-400"
-                          : isEnabled
-                            ? "border border-zinc-300 bg-zinc-100 font-semibold text-zinc-900 shadow-sm dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-50"
-                            : "border border-zinc-200 bg-white font-medium text-zinc-600 hover:bg-zinc-50 hover:text-zinc-900 dark:border-zinc-800/80 dark:bg-transparent dark:text-zinc-400 dark:hover:bg-zinc-900/50 dark:hover:text-zinc-200",
-                        disabled && !isGraphlit && "opacity-45",
+                        "flex h-8 shrink-0 cursor-default items-center gap-2 rounded-md border border-[#4752c4] bg-[#5865F2] px-3 text-xs font-semibold text-white shadow-sm ring-1 ring-inset ring-white/10 transition-all dark:border-[#7289da]",
+                        disabled && "cursor-default",
                       )}
                       onClick={() => toggleLane(laneId)}
                       disabled={disabled}
@@ -1414,41 +1583,57 @@ function Composer({
                     >
                       <BrandIcon
                         name={laneIconName(laneId)}
-                        className={classNames(
-                          "h-4 w-4",
-                          isEnabled
-                            ? "opacity-100 grayscale-0"
-                            : "opacity-60 grayscale transition-all group-hover:opacity-100 group-hover:grayscale-0",
-                        )}
+                        className="h-3.5 w-3.5 opacity-100 grayscale-0"
                         alt={LANE_LABELS[laneId]}
                       />
                       {LANE_LABELS[laneId]}
                     </button>
-                    {isGraphlit ? (
-                      <div
-                        className="mx-1 h-6 w-px shrink-0 bg-zinc-200 dark:bg-zinc-800"
-                      />
-                    ) : null}
-                  </Fragment>
-                );
-              })}
+                  );
+                })()}
+                <div className="h-6 w-px rounded-full bg-zinc-300 dark:bg-zinc-700" />
+              </div>
+              <div className="hide-scrollbar flex flex-1 items-center justify-start gap-2 overflow-x-auto md:flex-wrap md:overflow-visible">
+                {LANE_IDS.filter((laneId) => laneId !== "graphlit").map(
+                  (laneId) => {
+                    const readiness = bootstrap?.lanes[laneId];
+                    const disabled = isRunning || readiness?.enabled === false;
+                    const isEnabled = enabledLanes.has(laneId);
+
+                    return (
+                      <button
+                        key={laneId}
+                        type="button"
+                        className={classNames(
+                          "agent-harness-lane-toggle group flex h-8 shrink-0 cursor-pointer items-center gap-2 whitespace-nowrap rounded-md px-3 text-xs font-medium transition-all disabled:cursor-not-allowed",
+                          isEnabled
+                            ? "border border-zinc-300 bg-zinc-100 text-zinc-900 shadow-sm dark:border-zinc-500 dark:bg-zinc-700 dark:text-zinc-50"
+                            : "border border-zinc-200 bg-white text-zinc-600 hover:bg-zinc-50 hover:text-zinc-900 dark:border-zinc-800 dark:bg-transparent dark:text-zinc-400 dark:hover:bg-zinc-900/50 dark:hover:text-zinc-200",
+                          disabled && "opacity-45",
+                        )}
+                        onClick={() => toggleLane(laneId)}
+                        disabled={disabled}
+                        title={readiness?.reason}
+                      >
+                        <BrandIcon
+                          name={laneIconName(laneId)}
+                          className={classNames(
+                            "h-3.5 w-3.5",
+                            isEnabled
+                              ? "opacity-100 grayscale-0"
+                              : "opacity-60 grayscale transition-all group-hover:opacity-100 group-hover:grayscale-0",
+                          )}
+                          alt={LANE_LABELS[laneId]}
+                        />
+                        {LANE_LABELS[laneId]}
+                      </button>
+                    );
+                  },
+                )}
+              </div>
             </div>
-            <button
-              type="button"
-              className="flex shrink-0 items-center gap-2 rounded-md bg-zinc-900 px-5 py-2 text-sm font-semibold text-white shadow-md transition-all duration-150 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:bg-zinc-200 disabled:text-zinc-500 disabled:shadow-none dark:bg-white dark:text-zinc-950 dark:hover:bg-zinc-200 dark:disabled:bg-zinc-700 dark:disabled:text-zinc-400"
-              onClick={() => void onRun()}
-              disabled={!canRun}
-            >
-              {isRunning ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Send className="h-4 w-4" />
-              )}
-              Send
-            </button>
           </div>
         </div>
-      </div>
+      )}
       <div className="flex w-full shrink-0 items-center justify-center gap-2 border-t border-zinc-200 bg-zinc-50 py-2 font-mono text-[11px] tracking-wider text-zinc-500 dark:border-zinc-900 dark:bg-[#09090b]">
         <span className="h-2 w-2 animate-pulse rounded-full bg-zinc-400 dark:bg-zinc-700" />
         <span>{telemetryText}</span>
@@ -1467,7 +1652,7 @@ function JudgeSwitch({
   onToggle: () => void;
 }) {
   return (
-    <div className="flex shrink-0 items-center">
+    <div className="flex shrink-0 snap-start items-center">
       <span className="mr-2 shrink-0 text-[10px] font-bold uppercase tracking-widest text-zinc-500">
         JUDGE
       </span>
@@ -1490,6 +1675,59 @@ function JudgeSwitch({
   );
 }
 
+function ProviderPreference({
+  selected,
+  onSelect,
+  disabled,
+}: {
+  selected: ModelProviderPreference;
+  onSelect: (value: ModelProviderPreference) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="flex shrink-0 snap-start items-center">
+      <span className="mr-2 shrink-0 text-[10px] font-bold uppercase tracking-widest text-zinc-500">
+        Provider
+      </span>
+      <div className="flex items-center rounded-md border border-zinc-200/80 bg-zinc-100/80 p-0.5 dark:border-zinc-800/80 dark:bg-zinc-900/80">
+        {MODEL_PROVIDER_PREFERENCES.map((provider) => {
+          const active = selected === provider;
+          const label = MODEL_PROVIDER_LABELS[provider];
+
+          return (
+            <button
+              key={provider}
+              type="button"
+              aria-label={label}
+              title={label}
+              className={classNames(
+                "flex items-center justify-center rounded-sm px-2.5 py-1 transition-colors",
+                active
+                  ? "border border-zinc-200 bg-white text-zinc-900 shadow-sm dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-50"
+                  : "text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-200",
+                disabled && "cursor-not-allowed opacity-60",
+              )}
+              onClick={() => onSelect(provider)}
+              disabled={disabled}
+            >
+              <BrandIcon
+                name={providerIconName(provider)}
+                className={classNames(
+                  "h-4 w-4",
+                  active
+                    ? "opacity-100 grayscale-0"
+                    : "opacity-60 grayscale transition-all hover:opacity-100 hover:grayscale-0",
+                )}
+                alt={label}
+              />
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function Segmented({
   label,
   values,
@@ -1504,7 +1742,7 @@ function Segmented({
   disabled?: boolean;
 }) {
   return (
-    <div className="flex shrink-0 items-center">
+    <div className="flex shrink-0 snap-start items-center">
       <span className="mr-2 shrink-0 text-[10px] font-bold uppercase tracking-widest text-zinc-500">
         {label}
       </span>
@@ -1532,12 +1770,14 @@ function Segmented({
 
 function LanePanel({
   lane,
+  modelProvider,
   modelSize,
   nowMs,
   enabled,
   disabledReason,
 }: {
   lane: LaneUiState;
+  modelProvider: ModelProviderPreference;
   modelSize: ModelSize;
   nowMs: number;
   enabled: boolean;
@@ -1546,7 +1786,7 @@ function LanePanel({
   const hasTranscript = laneHasTranscript(lane);
 
   return (
-    <article className="flex min-h-0 flex-1 flex-col border-r border-zinc-200 bg-white last:border-r-0 dark:border-zinc-800 dark:bg-[#09090b]">
+    <article className="flex h-full min-h-0 w-full shrink-0 snap-center flex-col border-r border-zinc-200 bg-white md:w-[25vw] md:min-w-[320px] md:max-w-[400px] md:snap-align-none md:[scroll-snap-align:none] dark:border-zinc-800 dark:bg-[#09090b]">
       <header className="border-b border-zinc-200 px-3 py-2 dark:border-zinc-800">
         <div className="flex items-start justify-between gap-3">
           <div>
@@ -1559,7 +1799,7 @@ function LanePanel({
               {LANE_LABELS[lane.id]}
             </h2>
             <div className="mt-1 font-mono text-xs tabular-nums text-zinc-500">
-              {LANE_MODEL_LABELS[lane.id][modelSize]}
+              {getLaneModelLabel(lane.id, modelSize, modelProvider)}
             </div>
           </div>
         </div>
@@ -1603,20 +1843,29 @@ function LaneTurn({
   index: number;
   nowMs: number;
 }) {
+  const tokenCount = useMemo(() => turnTokenCount(turn), [turn]);
+
   return (
-    <div className="border-b border-zinc-200/80 last:border-b-0 dark:border-zinc-800/50">
-      <div className="flex items-center justify-between gap-3 border-b border-zinc-200/80 px-4 py-2 dark:border-zinc-800/50">
-        <div className="font-mono text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
+    <div className="border-b border-zinc-200/80 p-4 last:border-b-0 dark:border-zinc-800/50">
+      <div className="mb-2 flex items-start justify-between border-b border-zinc-100 pb-2 dark:border-zinc-800">
+        <div className="font-mono text-[9px] uppercase tracking-widest text-zinc-500">
           Turn {index + 1}
         </div>
-        <div
-          className={classNames(
-            "flex items-center gap-1.5 font-mono text-[10px] font-medium uppercase tracking-[0.18em]",
-            statusTone(turn.status),
-          )}
-        >
-          <StatusIcon status={turn.status} />
-          {turnStatusText(turn, nowMs)}
+        <div className="flex flex-col items-end gap-0.5">
+          <span
+            className={classNames(
+              "flex items-center gap-1 font-mono text-[9px] uppercase tracking-widest tabular-nums text-zinc-500",
+              statusTone(turn.status),
+            )}
+            title={turn.status.replace("_", " ")}
+          >
+            <Clock className="h-2.5 w-2.5" />
+            {formatElapsedMs(turnElapsedMs(turn, nowMs))}
+          </span>
+          <span className="flex items-center gap-1 font-mono text-[9px] uppercase tracking-widest tabular-nums text-zinc-400 dark:text-zinc-600">
+            <Hash className="h-2.5 w-2.5" />
+            {formatTokenCount(tokenCount)}
+          </span>
         </div>
       </div>
       <Section title="Prompt">
@@ -1740,6 +1989,7 @@ function normalizeTurnTrace(
             modelLabel: turn.result.modelLabel,
             reasoningEffort: turn.result.reasoningEffort,
             effectiveReasoningEffort: turn.result.effectiveReasoningEffort,
+            modelProvider: turn.result.modelProvider,
             modelSize: turn.result.modelSize,
             durationMs: turn.result.durationMs,
             error: turn.result.error,
@@ -1854,10 +2104,21 @@ function JsonBlock({ title, value }: { title: string; value: unknown }) {
   );
 }
 
+function sortedJudgeLanes(result: JudgeResult): JudgeResult["lanes"] {
+  const graphlit = result.lanes.find((lane) => lane.laneId === "graphlit");
+  const remaining = result.lanes
+    .filter((lane) => lane.laneId !== "graphlit")
+    .sort((left, right) => right.overallScore - left.overallScore);
+
+  return graphlit ? [graphlit, ...remaining] : remaining;
+}
+
 function JudgePanel({ judge }: { judge: JudgeUiState }) {
   if (judge.status === "idle") {
     return null;
   }
+
+  const judgeLanes = judge.result ? sortedJudgeLanes(judge.result) : [];
 
   return (
     <aside className="max-h-64 shrink-0 overflow-y-auto border-t border-zinc-200 bg-white dark:border-zinc-800 dark:bg-[#09090b]">
@@ -1897,28 +2158,50 @@ function JudgePanel({ judge }: { judge: JudgeUiState }) {
               {judge.result.winnerReason}
             </p>
           </div>
-          <div className="divide-y divide-zinc-200 dark:divide-zinc-800">
-            {judge.result.lanes.map((lane) => (
-              <div key={lane.anonymousId} className="grid gap-3 p-3 md:grid-cols-[120px_1fr]">
-                <div>
-                  <div className="text-xs font-semibold">
-                    {lane.laneId ? LANE_LABELS[lane.laneId] : lane.anonymousId}
+          <div>
+            {judgeLanes.map((lane) => {
+              const isGraphlit = lane.laneId === "graphlit";
+
+              return (
+                <div
+                  key={lane.anonymousId}
+                  className={classNames(
+                    "grid gap-3 md:grid-cols-[120px_1fr]",
+                    isGraphlit
+                      ? "border-l-2 border-[#5865F2] bg-[#5865F2]/5 p-3 dark:bg-[#5865F2]/10"
+                      : "border-t border-zinc-100 p-3 dark:border-zinc-800",
+                  )}
+                >
+                  <div>
+                    <div
+                      className={classNames(
+                        "text-xs font-semibold",
+                        isGraphlit && "text-[#5865F2]",
+                      )}
+                    >
+                      {lane.laneId
+                        ? LANE_LABELS[lane.laneId]
+                        : lane.anonymousId}
+                    </div>
+                    <div className="mt-1 font-mono text-xs tabular-nums text-zinc-500">
+                      {lane.overallScore}/5
+                    </div>
                   </div>
-                  <div className="mt-1 font-mono text-xs tabular-nums text-zinc-500">
-                    {lane.overallScore}/5
+                  <div>
+                    <Gauge
+                      value={lane.overallScore}
+                      tone={isGraphlit ? "graphlit" : "neutral"}
+                    />
+                    <div className="mt-2 grid grid-cols-2 gap-2 font-mono text-xs text-zinc-500">
+                      <span>retrieval {lane.retrievalUse}/5</span>
+                      <span>inspect {lane.sourceInspection}/5</span>
+                      <span>grounded {lane.groundedness}/5</span>
+                      <span>risk {lane.unsupportedClaimRisk}/5</span>
+                    </div>
                   </div>
                 </div>
-                <div>
-                  <Gauge value={lane.overallScore} />
-                  <div className="mt-2 grid grid-cols-2 gap-2 font-mono text-xs text-zinc-500">
-                    <span>retrieval {lane.retrievalUse}/5</span>
-                    <span>inspect {lane.sourceInspection}/5</span>
-                    <span>grounded {lane.groundedness}/5</span>
-                    <span>risk {lane.unsupportedClaimRisk}/5</span>
-                  </div>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       ) : null}
@@ -1926,7 +2209,13 @@ function JudgePanel({ judge }: { judge: JudgeUiState }) {
   );
 }
 
-function Gauge({ value }: { value: number }) {
+function Gauge({
+  value,
+  tone = "neutral",
+}: {
+  value: number;
+  tone?: "graphlit" | "neutral";
+}) {
   return (
     <div className="grid grid-cols-5 gap-1">
       {Array.from({ length: 5 }).map((_, index) => (
@@ -1935,7 +2224,9 @@ function Gauge({ value }: { value: number }) {
           className={classNames(
             "h-1.5 rounded-sm border border-zinc-300 dark:border-zinc-700",
             index < value
-              ? "bg-zinc-900 dark:bg-zinc-100"
+              ? tone === "graphlit"
+                ? "bg-[#5865F2]"
+                : "bg-zinc-800 dark:bg-zinc-200"
               : "bg-zinc-100 dark:bg-zinc-900",
           )}
         />

@@ -1,8 +1,13 @@
 const serverExternalPackages = [
+  "ai",
   "@ai-sdk/openai",
   "@anthropic-ai/claude-agent-sdk",
   "@google/adk",
   "@graphlit/agent-tools",
+  "@langchain/core",
+  "@langchain/langgraph",
+  "@langchain/langgraph-checkpoint",
+  "@langchain/openai",
   "@libsql/client",
   "@mastra/core",
   "@mastra/libsql",
@@ -12,6 +17,7 @@ const serverExternalPackages = [
   "@openai/agents-openai",
   "@openai/agents-realtime",
   "graphlit-client",
+  "langchain",
   "openai",
 ];
 

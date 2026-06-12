@@ -28,6 +28,7 @@
 html,
 body {
   min-height: 100%;
+  overflow-x: hidden;
 }
 
 body {
@@ -46,9 +47,13 @@ body {
   color: #d4d4d8;
 }
 
-button,
-textarea {
-  font: inherit;
+@layer base {
+  button,
+  textarea,
+  input,
+  select {
+    font-family: inherit;
+  }
 }
 
 .font-mono,
@@ -81,4 +86,18 @@ pre {
 
 .scrollbar-none::-webkit-scrollbar {
   display: none;
+}
+
+.agent-harness-prompt {
+  font-family: var(--font-geist-sans), -apple-system, BlinkMacSystemFont,
+    "Segoe UI", sans-serif;
+  font-size: 15px;
+  line-height: 22px;
+}
+
+.agent-harness-lane-toggle {
+  font-family: var(--font-geist-sans), -apple-system, BlinkMacSystemFont,
+    "Segoe UI", sans-serif;
+  font-size: 12px;
+  line-height: 16px;
 }

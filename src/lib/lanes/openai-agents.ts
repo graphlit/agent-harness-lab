@@ -38,6 +38,7 @@ export async function runOpenAiAgentsLane(
     turnId: context.turnId,
     prompt: context.prompt,
     reasoningEffort: context.reasoningEffort,
+    modelProvider: "openai",
     modelSize: context.modelSize,
     emit: context.emit,
   });

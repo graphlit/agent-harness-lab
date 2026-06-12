@@ -1,12 +1,14 @@
 import {
+  DEFAULT_MODEL_PROVIDER,
   LANE_LABELS,
-  LANE_MODEL_LABELS,
+  getLaneModelLabel,
   titleCaseEffort,
 } from "@/lib/constants";
 import type {
   LaneId,
   LaneRunResult,
   LaneSessionState,
+  ModelProviderPreference,
   ModelSize,
   ReasoningEffort,
   RunEventEmitter,
@@ -38,6 +40,7 @@ export class LaneRunRecorder {
   readonly turnId: string;
   readonly prompt: string;
   readonly reasoningEffort: ReasoningEffort;
+  readonly modelProvider: ModelProviderPreference;
   readonly modelSize: ModelSize;
   readonly startedAt = nowIso();
 
@@ -54,6 +57,7 @@ export class LaneRunRecorder {
     turnId: string;
     prompt: string;
     reasoningEffort: ReasoningEffort;
+    modelProvider?: ModelProviderPreference;
     modelSize: ModelSize;
     emit: RunEventEmitter;
   }) {
@@ -62,6 +66,7 @@ export class LaneRunRecorder {
     this.turnId = options.turnId;
     this.prompt = options.prompt;
     this.reasoningEffort = options.reasoningEffort;
+    this.modelProvider = options.modelProvider ?? DEFAULT_MODEL_PROVIDER;
     this.modelSize = options.modelSize;
     this.emit = options.emit;
   }
@@ -208,9 +213,14 @@ export class LaneRunRecorder {
       turnId: this.turnId,
       laneId: this.laneId,
       harnessName: LANE_LABELS[this.laneId],
-      modelLabel: LANE_MODEL_LABELS[this.laneId][this.modelSize],
+      modelLabel: getLaneModelLabel(
+        this.laneId,
+        this.modelSize,
+        this.modelProvider,
+      ),
       reasoningEffort: this.reasoningEffort,
       effectiveReasoningEffort: titleCaseEffort(this.reasoningEffort),
+      modelProvider: this.modelProvider,
       modelSize: this.modelSize,
       prompt: this.prompt,
       finalAnswer: this.finalAnswer.trim(),

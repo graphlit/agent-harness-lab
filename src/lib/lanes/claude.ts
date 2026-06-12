@@ -88,6 +88,7 @@ export async function runClaudeLane(
     turnId: context.turnId,
     prompt: context.prompt,
     reasoningEffort: context.reasoningEffort,
+    modelProvider: "anthropic",
     modelSize: context.modelSize,
     emit: context.emit,
   });

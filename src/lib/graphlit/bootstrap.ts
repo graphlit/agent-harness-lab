@@ -10,18 +10,23 @@ import { Types } from "graphlit-client";
 import {
   AGENT_HARNESS_LAB_BOOTSTRAP_VERSION,
   DEFAULT_LANES,
+  DEFAULT_MODEL_PROVIDER,
   DEFAULT_MODEL_SIZE,
   DEFAULT_REASONING_EFFORT,
   GRAPHLIT_SPEC_NAMES,
   JUDGE_SPEC_NAME,
+  MODEL_PROVIDER_PREFERENCES,
   SYSTEM_PROMPT,
 } from "@/lib/constants";
 import {
+  LANE_IDS,
   type BootstrapSpecificationRef,
   type BootstrapStatus,
   type GraphlitEffortSpecifications,
   type GraphlitModelSpecifications,
+  type GraphlitProviderSpecifications,
   type LaneId,
+  type ModelProviderPreference,
   type ModelSize,
   type ReasoningEffort,
   type StoredBootstrapState,
@@ -31,11 +36,14 @@ import {
   getGraphlitClientDiagnostics,
   getGraphlitCredentialError,
 } from "@/lib/graphlit/client";
+import { hasAnyModelProviderApiKey } from "@/lib/model-provider-keys";
 
 const BOOTSTRAP_STATE_DIR = ".graphlit-agent-harness-lab";
 const BOOTSTRAP_STATE_FILE = "bootstrap-state.json";
 const REASONING_EFFORTS: ReasoningEffort[] = ["low", "medium", "high"];
 const MODEL_SIZES: ModelSize[] = ["large", "small"];
+const MODEL_PROVIDERS = MODEL_PROVIDER_PREFERENCES;
+const ANTHROPIC_THINKING_TOKEN_LIMIT = 4_096;
 const DEFAULT_GRAPHLIT_OPERATION_TIMEOUT_MS = 15_000;
 let bootstrapAgentHarnessLabPromise: Promise<BootstrapStatus> | null = null;
 
@@ -112,6 +120,14 @@ function configuredDefaultReasoningEffort(): ReasoningEffort {
     : DEFAULT_REASONING_EFFORT;
 }
 
+function configuredDefaultModelProvider(): ModelProviderPreference {
+  const value = process.env.AGENT_HARNESS_LAB_MODEL_PROVIDER;
+
+  return value === "openai" || value === "anthropic" || value === "google"
+    ? value
+    : DEFAULT_MODEL_PROVIDER;
+}
+
 function configuredDefaultModelSize(): ModelSize {
   const value = process.env.AGENT_HARNESS_LAB_MODEL_SIZE;
 
@@ -129,6 +145,37 @@ function mapOpenAiReasoningEffort(
     case "medium":
     default:
       return Types.OpenAiReasoningEffortLevels.Medium;
+  }
+}
+
+function mapAnthropicEffort(
+  effort: ReasoningEffort,
+): Types.AnthropicEffortLevels {
+  switch (effort) {
+    case "low":
+      return Types.AnthropicEffortLevels.Low;
+    case "high":
+      return Types.AnthropicEffortLevels.High;
+    case "medium":
+    default:
+      return Types.AnthropicEffortLevels.Medium;
+  }
+}
+
+function mapGoogleThinkingLevel(
+  effort: ReasoningEffort,
+  modelSize: ModelSize,
+): Types.GoogleThinkingLevels {
+  switch (effort) {
+    case "low":
+      return Types.GoogleThinkingLevels.Low;
+    case "medium":
+      return modelSize === "small"
+        ? Types.GoogleThinkingLevels.Medium
+        : Types.GoogleThinkingLevels.High;
+    case "high":
+    default:
+      return Types.GoogleThinkingLevels.High;
   }
 }
 
@@ -205,13 +252,13 @@ async function writeStoredBootstrapState(
 }
 
 function buildGraphlitSpecification(
+  provider: ModelProviderPreference,
   effort: ReasoningEffort,
   modelSize: ModelSize,
 ): Types.SpecificationInput {
-  return {
-    name: GRAPHLIT_SPEC_NAMES[modelSize][effort],
+  const base = {
+    name: GRAPHLIT_SPEC_NAMES[provider][modelSize][effort],
     type: Types.SpecificationTypes.Agentic,
-    serviceType: Types.ModelServiceTypes.OpenAi,
     systemPrompt: SYSTEM_PROMPT,
     searchType: Types.ConversationSearchTypes.None,
     strategy: {
@@ -221,13 +268,51 @@ function buildGraphlitSpecification(
       toolRoundLimit: 8,
       toolResultTokenLimit: 6_000,
     },
+  };
+
+  if (provider === "anthropic") {
+    return {
+      ...base,
+      serviceType: Types.ModelServiceTypes.Anthropic,
+      anthropic: {
+        model:
+          modelSize === "large"
+            ? Types.AnthropicModels.Claude_4_8Opus
+            : Types.AnthropicModels.Claude_4_6Sonnet,
+        temperature: 0.2,
+        effort: mapAnthropicEffort(effort),
+        enableThinking: effort !== "low",
+        thinkingTokenLimit:
+          effort === "low" ? undefined : ANTHROPIC_THINKING_TOKEN_LIMIT,
+      },
+    };
+  }
+
+  if (provider === "google") {
+    return {
+      ...base,
+      serviceType: Types.ModelServiceTypes.Google,
+      google: {
+        model:
+          modelSize === "large"
+            ? Types.GoogleModels.Gemini_3ProPreview
+            : Types.GoogleModels.GeminiFlashLatest,
+        temperature: 0.2,
+        enableThinking: true,
+        thinkingLevel: mapGoogleThinkingLevel(effort, modelSize),
+      },
+    };
+  }
+
+  return {
+    ...base,
+    serviceType: Types.ModelServiceTypes.OpenAi,
     openAI: {
       model:
         modelSize === "large"
           ? Types.OpenAiModels.Gpt55_1024K
           : Types.OpenAiModels.Gpt5Mini_400K,
       temperature: 0.2,
-      completionTokenLimit: 1_600,
       reasoningEffort: mapOpenAiReasoningEffort(effort),
     },
   };
@@ -241,7 +326,6 @@ function buildJudgeSpecification(): Types.SpecificationInput {
     google: {
       model: Types.GoogleModels.Gemini_3_5Flash,
       temperature: 0,
-      completionTokenLimit: 2_000,
     },
   };
 }
@@ -261,34 +345,67 @@ function toSpecRef(
 }
 
 function buildLaneReadiness(graphlitReady: boolean): BootstrapStatus["lanes"] {
+  const hasProviderKey = hasAnyModelProviderApiKey();
+  const graphlitReason = "Graphlit credentials are required.";
+  const providerKeyReason =
+    "OPENAI_API_KEY, ANTHROPIC_API_KEY, or GEMINI_API_KEY is required.";
+
   return {
     graphlit: {
-      enabled: graphlitReady,
-      reason: graphlitReady ? undefined : "Graphlit credentials are required.",
+      enabled: graphlitReady && hasProviderKey,
+      reason: graphlitReady
+        ? hasProviderKey
+          ? undefined
+          : providerKeyReason
+        : graphlitReason,
     },
     openai: {
       enabled: graphlitReady && Boolean(process.env.OPENAI_API_KEY),
-      reason: process.env.OPENAI_API_KEY
-        ? undefined
-        : "OPENAI_API_KEY is required.",
+      reason: graphlitReady
+        ? process.env.OPENAI_API_KEY
+          ? undefined
+          : "OPENAI_API_KEY is required."
+        : graphlitReason,
+    },
+    vercel: {
+      enabled: graphlitReady && hasProviderKey,
+      reason: graphlitReady
+        ? hasProviderKey
+          ? undefined
+          : providerKeyReason
+        : graphlitReason,
+    },
+    langgraph: {
+      enabled: graphlitReady && hasProviderKey,
+      reason: graphlitReady
+        ? hasProviderKey
+          ? undefined
+          : providerKeyReason
+        : graphlitReason,
     },
     mastra: {
-      enabled: graphlitReady && Boolean(process.env.OPENAI_API_KEY),
-      reason: process.env.OPENAI_API_KEY
-        ? undefined
-        : "OPENAI_API_KEY is required.",
+      enabled: graphlitReady && hasProviderKey,
+      reason: graphlitReady
+        ? hasProviderKey
+          ? undefined
+          : providerKeyReason
+        : graphlitReason,
     },
     claude: {
       enabled: graphlitReady && Boolean(process.env.ANTHROPIC_API_KEY),
-      reason: process.env.ANTHROPIC_API_KEY
-        ? undefined
-        : "ANTHROPIC_API_KEY is required.",
+      reason: graphlitReady
+        ? process.env.ANTHROPIC_API_KEY
+          ? undefined
+          : "ANTHROPIC_API_KEY is required."
+        : graphlitReason,
     },
     google: {
       enabled: graphlitReady && Boolean(process.env.GEMINI_API_KEY),
-      reason: process.env.GEMINI_API_KEY
-        ? undefined
-        : "GEMINI_API_KEY is required.",
+      reason: graphlitReady
+        ? process.env.GEMINI_API_KEY
+          ? undefined
+          : "GEMINI_API_KEY is required."
+        : graphlitReason,
     },
   };
 }
@@ -303,21 +420,14 @@ function normalizeDefaultLanes(
     configured?.length ? configured : DEFAULT_LANES,
   );
 
-  return {
-    graphlit: lanes.graphlit,
-    openai: defaultSet.has("openai")
-      ? lanes.openai
-      : { enabled: false, reason: "Disabled by NEXT_PUBLIC_DEFAULT_LANES." },
-    mastra: defaultSet.has("mastra")
-      ? lanes.mastra
-      : { enabled: false, reason: "Disabled by NEXT_PUBLIC_DEFAULT_LANES." },
-    claude: defaultSet.has("claude")
-      ? lanes.claude
-      : { enabled: false, reason: "Disabled by NEXT_PUBLIC_DEFAULT_LANES." },
-    google: defaultSet.has("google")
-      ? lanes.google
-      : { enabled: false, reason: "Disabled by NEXT_PUBLIC_DEFAULT_LANES." },
-  };
+  return Object.fromEntries(
+    LANE_IDS.map((laneId) => [
+      laneId,
+      laneId === "graphlit" || defaultSet.has(laneId)
+        ? lanes[laneId]
+        : { enabled: false, reason: "Disabled by NEXT_PUBLIC_DEFAULT_LANES." },
+    ]),
+  ) as BootstrapStatus["lanes"];
 }
 
 export function bootstrapAgentHarnessLab(): Promise<BootstrapStatus> {
@@ -339,6 +449,7 @@ async function runBootstrapAgentHarnessLab(): Promise<BootstrapStatus> {
   const credentialError = getGraphlitCredentialError();
   const diagnostics = getGraphlitClientDiagnostics();
   const defaultReasoningEffort = configuredDefaultReasoningEffort();
+  const defaultModelProvider = configuredDefaultModelProvider();
   const defaultModelSize = configuredDefaultModelSize();
   const statePath = bootstrapStatePath();
   const stateReadStartedAt = Date.now();
@@ -363,6 +474,7 @@ async function runBootstrapAgentHarnessLab(): Promise<BootstrapStatus> {
     targetBootstrapVersion: AGENT_HARNESS_LAB_BOOTSTRAP_VERSION,
     storedBootstrapVersion: storedState.bootstrapVersion,
     defaultReasoningEffort,
+    defaultModelProvider,
     defaultModelSize,
     readWarning,
   });
@@ -380,6 +492,7 @@ async function runBootstrapAgentHarnessLab(): Promise<BootstrapStatus> {
       targetBootstrapVersion: AGENT_HARNESS_LAB_BOOTSTRAP_VERSION,
       storedBootstrapVersion: storedState.bootstrapVersion,
       defaultReasoningEffort,
+      defaultModelProvider,
       defaultModelSize,
       bootstrapUpToDate: false,
       rebootstrapPerformed: false,
@@ -418,6 +531,7 @@ async function runBootstrapAgentHarnessLab(): Promise<BootstrapStatus> {
       targetBootstrapVersion: AGENT_HARNESS_LAB_BOOTSTRAP_VERSION,
       storedBootstrapVersion: storedState.bootstrapVersion,
       defaultReasoningEffort,
+      defaultModelProvider,
       defaultModelSize,
       bootstrapUpToDate: false,
       rebootstrapPerformed: false,
@@ -432,9 +546,14 @@ async function runBootstrapAgentHarnessLab(): Promise<BootstrapStatus> {
   const bootstrapUpToDate =
     storedState.bootstrapVersion === AGENT_HARNESS_LAB_BOOTSTRAP_VERSION &&
     Boolean(storedState.specifications.judge?.id) &&
-    MODEL_SIZES.every((modelSize) =>
-      REASONING_EFFORTS.every(
-        (effort) => storedState.specifications.graphlit?.[modelSize]?.[effort]?.id,
+    MODEL_PROVIDERS.every((provider) =>
+      MODEL_SIZES.every((modelSize) =>
+        REASONING_EFFORTS.every(
+          (effort) =>
+            storedState.specifications.graphlit?.[provider]?.[modelSize]?.[
+              effort
+            ]?.id,
+        ),
       ),
     );
 
@@ -449,6 +568,7 @@ async function runBootstrapAgentHarnessLab(): Promise<BootstrapStatus> {
       targetBootstrapVersion: AGENT_HARNESS_LAB_BOOTSTRAP_VERSION,
       storedBootstrapVersion: storedState.bootstrapVersion,
       defaultReasoningEffort,
+      defaultModelProvider,
       defaultModelSize,
       bootstrapUpToDate: true,
       rebootstrapPerformed: false,
@@ -460,34 +580,39 @@ async function runBootstrapAgentHarnessLab(): Promise<BootstrapStatus> {
     };
   }
 
-  const graphlitSpecs = {} as GraphlitModelSpecifications;
+  const graphlitSpecs = {} as GraphlitProviderSpecifications;
 
   try {
-    for (const modelSize of MODEL_SIZES) {
-      graphlitSpecs[modelSize] = {} as GraphlitEffortSpecifications;
+    for (const provider of MODEL_PROVIDERS) {
+      graphlitSpecs[provider] = {} as GraphlitModelSpecifications;
 
-      for (const effort of REASONING_EFFORTS) {
-        const specName = GRAPHLIT_SPEC_NAMES[modelSize][effort];
-        logBootstrap("upsertSpecification.start", {
-          specName,
-          modelSize,
-          effort,
-        });
-        const upserted = await withGraphlitTimeout(
-          client.upsertSpecification(
-            buildGraphlitSpecification(effort, modelSize),
-          ),
-          `upsertSpecification(${specName})`,
-          diagnostics.apiUri,
-        );
-        graphlitSpecs[modelSize][effort] = toSpecRef(
-          upserted.upsertSpecification,
-          specName,
-        );
-        logBootstrap("upsertSpecification.success", {
-          specName,
-          id: graphlitSpecs[modelSize][effort].id,
-        });
+      for (const modelSize of MODEL_SIZES) {
+        graphlitSpecs[provider][modelSize] = {} as GraphlitEffortSpecifications;
+
+        for (const effort of REASONING_EFFORTS) {
+          const specName = GRAPHLIT_SPEC_NAMES[provider][modelSize][effort];
+          logBootstrap("upsertSpecification.start", {
+            specName,
+            provider,
+            modelSize,
+            effort,
+          });
+          const upserted = await withGraphlitTimeout(
+            client.upsertSpecification(
+              buildGraphlitSpecification(provider, effort, modelSize),
+            ),
+            `upsertSpecification(${specName})`,
+            diagnostics.apiUri,
+          );
+          graphlitSpecs[provider][modelSize][effort] = toSpecRef(
+            upserted.upsertSpecification,
+            specName,
+          );
+          logBootstrap("upsertSpecification.success", {
+            specName,
+            id: graphlitSpecs[provider][modelSize][effort].id,
+          });
+        }
       }
     }
 
@@ -524,6 +649,7 @@ async function runBootstrapAgentHarnessLab(): Promise<BootstrapStatus> {
       targetBootstrapVersion: AGENT_HARNESS_LAB_BOOTSTRAP_VERSION,
       storedBootstrapVersion: storedState.bootstrapVersion,
       defaultReasoningEffort,
+      defaultModelProvider,
       defaultModelSize,
       bootstrapUpToDate: false,
       rebootstrapPerformed: true,
@@ -546,6 +672,7 @@ async function runBootstrapAgentHarnessLab(): Promise<BootstrapStatus> {
       targetBootstrapVersion: AGENT_HARNESS_LAB_BOOTSTRAP_VERSION,
       storedBootstrapVersion: storedState.bootstrapVersion,
       defaultReasoningEffort,
+      defaultModelProvider,
       defaultModelSize,
       bootstrapUpToDate: false,
       rebootstrapPerformed: false,
@@ -560,10 +687,12 @@ async function runBootstrapAgentHarnessLab(): Promise<BootstrapStatus> {
 
 export async function getBootstrappedSpecification(
   effort: ReasoningEffort,
+  modelProvider: ModelProviderPreference = DEFAULT_MODEL_PROVIDER,
   modelSize: ModelSize = DEFAULT_MODEL_SIZE,
 ): Promise<BootstrapSpecificationRef> {
   const status = await bootstrapAgentHarnessLab();
-  const spec = status.specifications.graphlit?.[modelSize]?.[effort];
+  const spec =
+    status.specifications.graphlit?.[modelProvider]?.[modelSize]?.[effort];
 
   if (!status.graphlit.ready) {
     throw new Error(status.graphlit.error ?? "Graphlit project is not ready.");
@@ -571,7 +700,7 @@ export async function getBootstrappedSpecification(
 
   if (!spec?.id) {
     throw new Error(
-      `Graphlit ${modelSize} ${effort} specification is not bootstrapped.`,
+      `Graphlit ${modelProvider} ${modelSize} ${effort} specification is not bootstrapped.`,
     );
   }
 

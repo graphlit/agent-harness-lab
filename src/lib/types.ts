@@ -1,6 +1,8 @@
 export const LANE_IDS = [
   "graphlit",
   "openai",
+  "vercel",
+  "langgraph",
   "mastra",
   "claude",
   "google",
@@ -9,6 +11,7 @@ export const LANE_IDS = [
 export type LaneId = (typeof LANE_IDS)[number];
 export type ReasoningEffort = "low" | "medium" | "high";
 export type ModelSize = "large" | "small";
+export type ModelProviderPreference = "openai" | "anthropic" | "google";
 export type LaneStatus =
   | "idle"
   | "queued"
@@ -30,6 +33,9 @@ export interface LaneSessionState {
   graphlitConversationId?: string;
   openAiSessionId?: string;
   openAiItems?: JsonValue[];
+  vercelMessages?: JsonValue[];
+  langGraphThreadId?: string;
+  langGraphMessages?: JsonValue[];
   mastraResourceId?: string;
   mastraThreadId?: string;
   claudeSessionId?: string;
@@ -65,6 +71,7 @@ export interface LaneRunResult {
   modelLabel?: string;
   reasoningEffort?: ReasoningEffort;
   effectiveReasoningEffort?: string;
+  modelProvider?: ModelProviderPreference;
   modelSize?: ModelSize;
   prompt: string;
   finalAnswer: string;
@@ -119,6 +126,7 @@ export interface RunRequest {
   lanes: LaneId[];
   judge: boolean;
   reasoningEffort?: ReasoningEffort;
+  modelProvider?: ModelProviderPreference;
   modelSize?: ModelSize;
   laneSessions?: Partial<Record<LaneId, LaneSessionState>>;
 }
@@ -136,11 +144,15 @@ export type GraphlitModelSpecifications = Record<
   ModelSize,
   GraphlitEffortSpecifications
 >;
+export type GraphlitProviderSpecifications = Record<
+  ModelProviderPreference,
+  GraphlitModelSpecifications
+>;
 
 export interface StoredBootstrapState {
   bootstrapVersion: string | null;
   specifications: {
-    graphlit?: Partial<GraphlitModelSpecifications>;
+    graphlit?: Partial<GraphlitProviderSpecifications>;
     judge?: BootstrapSpecificationRef;
   };
   updatedAt?: string;
@@ -150,13 +162,14 @@ export interface BootstrapStatus {
   targetBootstrapVersion: string;
   storedBootstrapVersion: string | null;
   defaultReasoningEffort: ReasoningEffort;
+  defaultModelProvider: ModelProviderPreference;
   defaultModelSize: ModelSize;
   bootstrapUpToDate: boolean;
   rebootstrapPerformed: boolean;
   warning?: string;
   graphlit: { ready: boolean; error?: string };
   specifications: {
-    graphlit?: Partial<GraphlitModelSpecifications>;
+    graphlit?: Partial<GraphlitProviderSpecifications>;
     judge?: BootstrapSpecificationRef;
   };
   lanes: Record<LaneId, { enabled: boolean; reason?: string }>;
@@ -247,6 +260,7 @@ export interface LaneRunContext {
   sessionId: string;
   prompt: string;
   reasoningEffort: ReasoningEffort;
+  modelProvider: ModelProviderPreference;
   modelSize: ModelSize;
   emit: RunEventEmitter;
   abortSignal?: AbortSignal;

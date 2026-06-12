@@ -1,11 +1,14 @@
 import "server-only";
 
+import Anthropic from "@anthropic-ai/sdk";
+import { GoogleGenAI } from "@google/genai";
 import OpenAI from "openai";
 import type { AgentStreamEvent } from "graphlit-client";
 
 import { SYSTEM_PROMPT } from "@/lib/constants";
 import { createGraphlitClient } from "@/lib/graphlit/client";
 import { LaneRunRecorder } from "@/lib/lanes/recorder";
+import { requireModelProviderApiKey } from "@/lib/model-provider-keys";
 import type { LaneRunContext, LaneRunResult } from "@/lib/types";
 import { errorMessage } from "@/lib/utils";
 import { createGraphlitTools } from "@/lib/tools/createGraphlitTools";
@@ -46,16 +49,13 @@ export async function runGraphlitLane(
     throw new Error("Graphlit lane is missing a bootstrapped specification.");
   }
 
-  if (!process.env.OPENAI_API_KEY) {
-    throw new Error("OPENAI_API_KEY is required for the Graphlit lane.");
-  }
-
   const recorder = new LaneRunRecorder({
     laneId: "graphlit",
     runId: context.runId,
     turnId: context.turnId,
     prompt: context.prompt,
     reasoningEffort: context.reasoningEffort,
+    modelProvider: context.modelProvider,
     modelSize: context.modelSize,
     emit: context.emit,
   });
@@ -75,15 +75,31 @@ export async function runGraphlitLane(
     event: {
       phase: "graphlit.client.create",
       specificationId: context.graphlitSpecification.id,
+      modelProvider: context.modelProvider,
       continuingConversation: Boolean(conversationId),
     },
   });
   const client = createGraphlitClient();
-  client.setOpenAIClient(
-    new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY,
-    }),
-  );
+
+  if (context.modelProvider === "anthropic") {
+    client.setAnthropicClient(
+      new Anthropic({
+        apiKey: requireModelProviderApiKey("anthropic", "the Graphlit lane"),
+      }),
+    );
+  } else if (context.modelProvider === "google") {
+    client.setGoogleClient(
+      new GoogleGenAI({
+        apiKey: requireModelProviderApiKey("google", "the Graphlit lane"),
+      }),
+    );
+  } else {
+    client.setOpenAIClient(
+      new OpenAI({
+        apiKey: requireModelProviderApiKey("openai", "the Graphlit lane"),
+      }),
+    );
+  }
 
   const tools = createGraphlitTools(client).map((tool) =>
     recordGraphlitToolCall(tool, recorder),
@@ -95,6 +111,7 @@ export async function runGraphlitLane(
       phase: "graphlit.streamAgent.start",
       specificationId: context.graphlitSpecification.id,
       conversationId,
+      modelProvider: context.modelProvider,
       toolCount: tools.length,
     };
 
@@ -104,6 +121,7 @@ export async function runGraphlitLane(
       turnId: context.turnId,
       specificationId: context.graphlitSpecification.id,
       conversationId,
+      modelProvider: context.modelProvider,
       toolCount: tools.length,
     });
     await context.emit({

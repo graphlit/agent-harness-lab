@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import {
   DEFAULT_MODEL_SIZE,
+  DEFAULT_MODEL_PROVIDER,
   DEFAULT_REASONING_EFFORT,
   LANE_LABELS,
 } from "@/lib/constants";
@@ -12,6 +13,7 @@ import {
   type LaneRunContext,
   type LaneRunResult,
   type LaneSessionState,
+  type ModelProviderPreference,
   type ModelSize,
   type ReasoningEffort,
 } from "@/lib/types";
@@ -27,6 +29,9 @@ const LaneRunRequestSchema = z.object({
   reasoningEffort: z
     .enum(["low", "medium", "high"])
     .default(DEFAULT_REASONING_EFFORT),
+  modelProvider: z
+    .enum(["openai", "anthropic", "google"])
+    .default(DEFAULT_MODEL_PROVIDER),
   modelSize: z.enum(["large", "small"]).default(DEFAULT_MODEL_SIZE),
   laneSession: z.record(z.string(), z.unknown()).default({}),
 });
@@ -140,6 +145,8 @@ export function createLaneRoute(laneId: LaneId, loadLaneRunner: LaneRunnerLoader
     const turnId = parsed.data.turnId;
     const prompt = parsed.data.prompt;
     const reasoningEffort = parsed.data.reasoningEffort as ReasoningEffort;
+    const modelProvider = parsed.data
+      .modelProvider as ModelProviderPreference;
     const modelSize = parsed.data.modelSize as ModelSize;
     const laneSession = parsed.data.laneSession as LaneSessionState;
 
@@ -148,6 +155,7 @@ export function createLaneRoute(laneId: LaneId, loadLaneRunner: LaneRunnerLoader
       turnId,
       sessionId,
       reasoningEffort,
+      modelProvider,
       modelSize,
     });
 
@@ -191,6 +199,7 @@ export function createLaneRoute(laneId: LaneId, loadLaneRunner: LaneRunnerLoader
             phase: "lane.invoke.start",
             laneId,
             modelSize,
+            modelProvider,
             reasoningEffort,
           },
         });
@@ -207,15 +216,16 @@ export function createLaneRoute(laneId: LaneId, loadLaneRunner: LaneRunnerLoader
               sessionId,
               prompt,
               reasoningEffort,
+              modelProvider,
               modelSize,
               emit,
               abortSignal,
               laneSession,
               graphlitSpecification:
                 laneId === "graphlit"
-                  ? bootstrap.specifications.graphlit?.[modelSize]?.[
-                      reasoningEffort
-                    ]
+                  ? bootstrap.specifications.graphlit?.[modelProvider]?.[
+                      modelSize
+                    ]?.[reasoningEffort]
                   : undefined,
             }),
           request.signal,

@@ -2,7 +2,7 @@ import "server-only";
 
 import { Types } from "graphlit-client";
 
-import { JUDGE_RUBRIC_VERSION } from "@/lib/constants";
+import { JUDGE_RUBRIC_VERSION, LANE_LABELS } from "@/lib/constants";
 import { createGraphlitClient } from "@/lib/graphlit/client";
 import {
   JudgeResultSchema,
@@ -16,7 +16,7 @@ import type {
 } from "@/lib/types";
 import { summarizeJson } from "@/lib/utils";
 
-const ANONYMOUS_IDS = ["A", "B", "C", "D"] as const;
+const ANONYMOUS_IDS = ["A", "B", "C", "D", "E", "F", "G", "H"] as const;
 
 function deterministicShuffle<T>(items: T[], seed: string): T[] {
   const values = [...items];
@@ -42,14 +42,20 @@ function buildJudgePrompt(): string {
     "Do not reward verbosity by default.",
     "Penalize unsupported claims and missing source inspection.",
     "Prefer answers that visibly use retrieved Graphlit evidence.",
-    "Lanes are anonymized. Do not infer harness identity.",
+    "Lanes are anonymized for scoring. Do not infer harness identity or reward a lane because of its name.",
+    "Use anonymousId values for structured ID fields only.",
+    "Use the provided friendlyName values in all human-readable prose fields. Never write 'Lane A', 'Lane B', or similar anonymous labels in summary, winnerReason, strengths, weaknesses, traceEvidence, or pairwise notes.",
+    "Example: write 'Graphlit is the best response...' instead of 'Lane C is the best response...'.",
     "Call score_agent_harness_run exactly once with the structured scores.",
   ].join(" ");
 }
 
 function compactLaneResult(result: LaneRunResult, anonymousId: string) {
+  const friendlyName = LANE_LABELS[result.laneId];
+
   return {
     anonymousId,
+    friendlyName,
     finalAnswer: result.finalAnswer,
     toolCalls: result.toolCalls.map((call) => ({
       name: call.name,
@@ -66,6 +72,52 @@ function compactLaneResult(result: LaneRunResult, anonymousId: string) {
     })),
     durationMs: result.durationMs,
   };
+}
+
+function formatFriendlyList(names: string[]): string {
+  if (names.length <= 1) {
+    return names[0] ?? "";
+  }
+
+  if (names.length === 2) {
+    return `${names[0]} and ${names[1]}`;
+  }
+
+  return `${names.slice(0, -1).join(", ")}, and ${names[names.length - 1]}`;
+}
+
+function replaceAnonymousLaneLabels(
+  text: string,
+  anonymousToLane: Map<string, LaneId>,
+): string {
+  const labelFor = (anonymousId: string): string | null => {
+    const laneId = anonymousToLane.get(anonymousId.toUpperCase());
+    return laneId ? LANE_LABELS[laneId] : null;
+  };
+
+  return text
+    .replace(
+      /\bLanes\s+([A-H](?:(?:,\s*and\s+|,\s*|\s+and\s+)[A-H])*)/gi,
+      (match, anonymousIds: string) => {
+        const names = Array.from(anonymousIds.matchAll(/[A-H]/gi))
+          .map(([anonymousId]) => labelFor(anonymousId))
+          .filter((name): name is string => Boolean(name));
+
+        return names.length > 0 ? formatFriendlyList(names) : match;
+      },
+    )
+    .replace(/\bLane\s+([A-H])\b/gi, (match, anonymousId: string) => {
+      return labelFor(anonymousId) ?? match;
+    });
+}
+
+function replaceAnonymousLaneLabelsInList(
+  values: string[],
+  anonymousToLane: Map<string, LaneId>,
+): string[] {
+  return values.map((value) =>
+    replaceAnonymousLaneLabels(value, anonymousToLane),
+  );
 }
 
 export async function runJudge(options: {
@@ -88,11 +140,16 @@ export async function runJudge(options: {
   const judgeInput = {
     prompt: options.prompt,
     rubricVersion: JUDGE_RUBRIC_VERSION,
+    laneNameMap: ordered.map((result, index) => ({
+      anonymousId: ANONYMOUS_IDS[index],
+      friendlyName: LANE_LABELS[result.laneId],
+    })),
     lanes: ordered.map((result, index) =>
       compactLaneResult(result, ANONYMOUS_IDS[index]),
     ),
     failedLanes: options.failed.map((failure) => ({
       anonymousId: laneToAnonymous.get(failure.laneId) ?? null,
+      friendlyName: LANE_LABELS[failure.laneId],
       error: failure.error,
     })),
   };
@@ -123,12 +180,29 @@ export async function runJudge(options: {
 
   return {
     ...parsed,
+    winnerReason: replaceAnonymousLaneLabels(
+      parsed.winnerReason,
+      anonymousToLane,
+    ),
+    summary: replaceAnonymousLaneLabels(parsed.summary, anonymousToLane),
     winnerLaneId: parsed.winnerAnonymousId
       ? (anonymousToLane.get(parsed.winnerAnonymousId) ?? null)
       : null,
     lanes: parsed.lanes.map((lane) => ({
       ...lane,
       laneId: anonymousToLane.get(lane.anonymousId),
+      traceEvidence: replaceAnonymousLaneLabelsInList(
+        lane.traceEvidence,
+        anonymousToLane,
+      ),
+      strengths: replaceAnonymousLaneLabelsInList(
+        lane.strengths,
+        anonymousToLane,
+      ),
+      weaknesses: replaceAnonymousLaneLabelsInList(
+        lane.weaknesses,
+        anonymousToLane,
+      ),
     })),
     pairwiseNotes: parsed.pairwiseNotes.map((note) => ({
       ...note,
@@ -138,6 +212,7 @@ export async function runJudge(options: {
       worseLaneId: note.worseAnonymousId
         ? (anonymousToLane.get(note.worseAnonymousId) ?? null)
         : null,
+      reason: replaceAnonymousLaneLabels(note.reason, anonymousToLane),
     })),
   };
 }

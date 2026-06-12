@@ -97,6 +97,7 @@ export async function runGoogleLane(
     turnId: context.turnId,
     prompt: context.prompt,
     reasoningEffort: context.reasoningEffort,
+    modelProvider: "google",
     modelSize: context.modelSize,
     emit: context.emit,
   });

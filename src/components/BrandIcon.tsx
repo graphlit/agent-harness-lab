@@ -3,6 +3,8 @@
 type BrandIconName =
   | "graphlit"
   | "openai"
+  | "vercel"
+  | "langgraph"
   | "mastra"
   | "claude"
   | "google";
@@ -20,6 +22,8 @@ const BRAND_CONFIGS: Record<
   { domain: string; type: "icon" | "symbol" | "logo" }
 > = {
   openai: { domain: "openai.com", type: "icon" },
+  vercel: { domain: "vercel.com", type: "icon" },
+  langgraph: { domain: "langchain.com", type: "icon" },
   claude: { domain: "anthropic.com", type: "icon" },
   google: { domain: "google.com", type: "symbol" },
 };
