@@ -230,6 +230,7 @@ export async function runMastraLane(
       resourceId,
       threadId,
       toolCount: Object.keys(tools).length,
+      toolChoice: "required_first",
       streaming: {
         api: "Agent.stream().textStream",
         cadence: "native",
@@ -242,6 +243,9 @@ export async function runMastraLane(
       },
       runId: context.runId,
       maxSteps: 8,
+      prepareStep: ({ stepNumber }) => ({
+        toolChoice: stepNumber === 0 ? "required" : "auto",
+      }),
       abortSignal: context.abortSignal,
     });
     await emitTextStream(result.textStream, recorder);

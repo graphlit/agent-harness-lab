@@ -7,6 +7,7 @@ import {
   DEFAULT_REASONING_EFFORT,
   DEFAULT_SYSTEM_PROMPT_ENABLED,
   LANE_LABELS,
+  LONG_RUNNING_TEST_TIMEOUT_MS,
   SYSTEM_PROMPT,
   createRuntimeInstructions,
 } from "@/lib/constants";
@@ -22,7 +23,7 @@ import {
 } from "@/lib/types";
 import { createId, errorMessage } from "@/lib/utils";
 
-const LANE_RUN_TIMEOUT_MS = 180_000;
+const LANE_RUN_TIMEOUT_MS = LONG_RUNNING_TEST_TIMEOUT_MS;
 
 const LaneRunRequestSchema = z.object({
   runId: z.string().trim().min(1).optional(),

@@ -42,6 +42,7 @@ import {
   LANE_LABELS,
   LANE_STREAM_LABELS,
   LANE_STREAM_TITLES,
+  LONG_RUNNING_TEST_TIMEOUT_MS,
   MODEL_PROVIDER_LABELS,
   MODEL_PROVIDER_PREFERENCES,
   SYSTEM_PROMPT,
@@ -96,8 +97,8 @@ type ColorTheme = "dark" | "light";
 
 const PROMPT_HISTORY_KEY = "agent-harness-lab-prompt-history";
 const MAX_PROMPT_HISTORY = 50;
-const LANE_START_TIMEOUT_MS = 45_000;
-const JUDGE_CLIENT_TIMEOUT_MS = 120_000;
+const LANE_START_TIMEOUT_MS = LONG_RUNNING_TEST_TIMEOUT_MS;
+const JUDGE_CLIENT_TIMEOUT_MS = LONG_RUNNING_TEST_TIMEOUT_MS;
 
 const initialTurnState = (
   turnId: string,
@@ -410,6 +411,10 @@ function statusTone(status: LaneStatus): string {
     default:
       return "text-zinc-500";
   }
+}
+
+function isLaneInProgress(status?: LaneStatus): boolean {
+  return status === "queued" || status === "running" || status === "tool_calling";
 }
 
 function formatElapsedMs(ms: number): string {
@@ -780,6 +785,7 @@ export function AppShell() {
   const [judge, setJudge] = useState<JudgeUiState>({ status: "idle" });
   const [isRunning, setIsRunning] = useState(false);
   const [isComposerCollapsed, setIsComposerCollapsed] = useState(false);
+  const [activePrompt, setActivePrompt] = useState("");
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [colorTheme, setColorTheme] = useState<ColorTheme>("dark");
   const promptRef = useRef<HTMLTextAreaElement>(null);
@@ -1055,6 +1061,7 @@ export function AppShell() {
     );
 
     rememberPrompt(currentPrompt);
+    setActivePrompt(currentPrompt);
     setPrompt("");
     setHistoryIndex(-1);
     setHistoryDraft("");
@@ -1335,6 +1342,7 @@ export function AppShell() {
     const nextEnabled = defaultEnabledLanes(bootstrap);
 
     setPrompt("");
+    setActivePrompt("");
     setHistoryIndex(-1);
     setHistoryDraft("");
     setReasoningEffort(
@@ -1480,6 +1488,7 @@ export function AppShell() {
         toggleLane={toggleLane}
         bootstrap={bootstrap}
         bootstrapError={bootstrapError}
+        activePrompt={activePrompt}
         isRunning={isRunning}
         isCollapsed={isComposerCollapsed}
         setIsCollapsed={setIsComposerCollapsed}
@@ -1527,6 +1536,7 @@ function Composer({
   toggleLane,
   bootstrap,
   bootstrapError,
+  activePrompt,
   isRunning,
   isCollapsed,
   setIsCollapsed,
@@ -1552,6 +1562,7 @@ function Composer({
   toggleLane: (laneId: LaneId) => void;
   bootstrap: BootstrapStatus | null;
   bootstrapError: string | null;
+  activePrompt: string;
   isRunning: boolean;
   isCollapsed: boolean;
   setIsCollapsed: (value: boolean) => void;
@@ -1578,11 +1589,14 @@ function Composer({
       .filter(Boolean)
       .join(" ") ||
     "Ready.";
-  const footerStatusText = isRunning
-    ? `Running ${enabledLanes.size.toLocaleString()} ${
-        enabledLanes.size === 1 ? "lane" : "lanes"
-      }...`
-    : telemetryText;
+  const activePromptText = activePrompt.trim();
+  const footerStatusText = activePromptText
+    ? `Prompt: ${activePromptText}`
+    : isRunning
+      ? `Running ${enabledLanes.size.toLocaleString()} ${
+          enabledLanes.size === 1 ? "lane" : "lanes"
+        }...`
+      : telemetryText;
   const enabledLaneText = `${enabledLanes.size.toLocaleString()} ${
     enabledLanes.size === 1 ? "lane" : "lanes"
   }`;
@@ -1951,14 +1965,16 @@ function Composer({
           </div>
         </div>
       </div>
-      <div className="flex w-full shrink-0 items-center justify-center gap-2 border-t border-zinc-200 bg-zinc-50 py-2 font-mono text-[11px] tracking-wider text-zinc-500 dark:border-zinc-900 dark:bg-[#09090b]">
+      <div className="flex w-full shrink-0 items-center justify-center gap-2 overflow-hidden border-t border-zinc-200 bg-zinc-50 px-4 py-2 font-mono text-[11px] tracking-wider text-zinc-500 dark:border-zinc-900 dark:bg-[#09090b]">
         <span
           className={classNames(
-            "h-2 w-2 rounded-full bg-zinc-400 dark:bg-zinc-700",
+            "h-2 w-2 shrink-0 rounded-full bg-zinc-400 dark:bg-zinc-700",
             isRunning && "animate-pulse",
           )}
         />
-        <span>{footerStatusText}</span>
+        <span className="min-w-0 max-w-6xl truncate text-center">
+          {footerStatusText}
+        </span>
       </div>
     </footer>
   );
@@ -2184,10 +2200,19 @@ function LanePanel({
   disabledReason?: string;
 }) {
   const hasTranscript = laneHasTranscript(lane);
+  const latestTurn = lane.turns.at(-1);
+  const isInProgress = isLaneInProgress(latestTurn?.status);
 
   return (
     <article className="flex h-full min-h-0 w-full shrink-0 snap-center flex-col border-r border-zinc-200 bg-white md:w-[25vw] md:min-w-[320px] md:max-w-[400px] md:snap-align-none md:[scroll-snap-align:none] dark:border-zinc-800 dark:bg-[#09090b]">
-      <header className="border-b border-zinc-200 px-3 py-2 dark:border-zinc-800">
+      <header
+        className={classNames(
+          "border-b px-3 py-2 transition-colors",
+          isInProgress
+            ? "border-emerald-200 bg-emerald-50/80 dark:border-emerald-900/60 dark:bg-emerald-950/20"
+            : "border-zinc-200 dark:border-zinc-800",
+        )}
+      >
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 flex-1">
             <h2 className="flex items-center gap-1.5 text-base font-semibold tracking-tight">
@@ -2197,6 +2222,13 @@ function LanePanel({
                 alt={LANE_LABELS[lane.id]}
               />
               {LANE_LABELS[lane.id]}
+              {isInProgress ? (
+                <span
+                  className="ml-1 h-2 w-2 rounded-full bg-emerald-500 shadow-[0_0_0_3px_rgba(16,185,129,0.16)] animate-pulse"
+                  aria-label="In progress"
+                  title="In progress"
+                />
+              ) : null}
             </h2>
             <div className="mt-1 flex min-w-0 items-center justify-between gap-2">
               <div className="min-w-0 truncate font-mono text-xs tabular-nums text-zinc-500">
@@ -2914,6 +2946,94 @@ function sortedJudgeLanes(result: JudgeResult): JudgeResult["lanes"] {
   return graphlit ? [graphlit, ...remaining] : remaining;
 }
 
+function judgeLaneName(lane: JudgeResult["lanes"][number]): string {
+  return lane.laneId ? LANE_LABELS[lane.laneId] : lane.anonymousId;
+}
+
+function formatJudgeList(values: string[]): string {
+  return values.length
+    ? values.map((value) => `- ${value}`).join("\n")
+    : "- None";
+}
+
+function formatJudgeMarkdownReport(result: JudgeResult): string {
+  const winner = result.winnerLaneId
+    ? LANE_LABELS[result.winnerLaneId]
+    : "No clear winner";
+  const lines = [
+    "# Judge Report",
+    "",
+    `**Winner:** ${winner}`,
+    "",
+    "## Summary",
+    "",
+    result.summary,
+    "",
+    "## Winner Rationale",
+    "",
+    result.winnerReason,
+    "",
+    "## Scores",
+    "",
+    "| Lane | Overall | Retrieval | Inspect | Grounded | Helpful | Risk |",
+    "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ...sortedJudgeLanes(result).map(
+      (lane) =>
+        `| ${judgeLaneName(lane)} | ${lane.overallScore}/10 | ${lane.retrievalUse}/10 | ${lane.sourceInspection}/10 | ${lane.groundedness}/10 | ${lane.answerHelpfulness}/10 | ${lane.unsupportedClaimRisk}/10 |`,
+    ),
+    "",
+    "## Lane Notes",
+    "",
+    ...sortedJudgeLanes(result).flatMap((lane) => [
+      `### ${judgeLaneName(lane)}`,
+      "",
+      "**Evidence**",
+      "",
+      formatJudgeList(lane.traceEvidence),
+      "",
+      "**Strengths**",
+      "",
+      formatJudgeList(lane.strengths),
+      "",
+      "**Weaknesses**",
+      "",
+      formatJudgeList(lane.weaknesses),
+      "",
+    ]),
+  ];
+
+  if (result.pairwiseNotes.length) {
+    lines.push(
+      "## Pairwise Notes",
+      "",
+      ...result.pairwiseNotes.map((note) => {
+        const better = note.betterLaneId ? LANE_LABELS[note.betterLaneId] : "";
+        const worse = note.worseLaneId ? LANE_LABELS[note.worseLaneId] : "";
+        const prefix =
+          better && worse
+            ? `**${better} over ${worse}:** `
+            : better
+              ? `**${better}:** `
+              : "";
+
+        return `- ${prefix}${note.reason}`;
+      }),
+      "",
+    );
+  }
+
+  lines.push(
+    "## Bias Checks",
+    "",
+    ...Object.entries(result.biasChecks).map(
+      ([key, value]) => `- **${key}:** ${value ? "true" : "false"}`,
+    ),
+    "",
+  );
+
+  return lines.join("\n").trim();
+}
+
 function JudgePanel({
   judge,
   onClose,
@@ -2921,11 +3041,38 @@ function JudgePanel({
   judge: JudgeUiState;
   onClose: () => void;
 }) {
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">(
+    "idle",
+  );
+
   if (judge.status === "idle") {
     return null;
   }
 
   const judgeLanes = judge.result ? sortedJudgeLanes(judge.result) : [];
+  const copyLabel =
+    copyState === "copied"
+      ? "Copied judge report"
+      : copyState === "failed"
+        ? "Could not copy judge report"
+        : "Copy judge report";
+
+  async function copyJudgeReport() {
+    if (!judge.result) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(
+        formatJudgeMarkdownReport(judge.result),
+      );
+      setCopyState("copied");
+    } catch {
+      setCopyState("failed");
+    }
+
+    window.setTimeout(() => setCopyState("idle"), 1_200);
+  }
 
   return (
     <aside className="flex max-h-64 shrink-0 flex-col border-t border-zinc-200 bg-white dark:border-zinc-800 dark:bg-[#09090b]">
@@ -2946,6 +3093,26 @@ function JudgePanel({
             </div>
           </div>
           <div className="flex items-center gap-2">
+            {judge.result ? (
+              <button
+                type="button"
+                aria-label={copyLabel}
+                title={copyLabel}
+                className={classNames(
+                  "flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-zinc-400 transition-colors hover:bg-zinc-100 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:hover:text-zinc-100",
+                  copyState === "copied" &&
+                    "text-emerald-600 dark:text-emerald-400",
+                  copyState === "failed" && "text-zinc-700 dark:text-zinc-200",
+                )}
+                onClick={() => void copyJudgeReport()}
+              >
+                {copyState === "copied" ? (
+                  <Check className="h-3.5 w-3.5" />
+                ) : (
+                  <Copy className="h-3.5 w-3.5" />
+                )}
+              </button>
+            ) : null}
             <div className="font-mono text-xs tabular-nums text-zinc-500">
               {judge.status}
             </div>

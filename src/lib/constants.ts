@@ -12,6 +12,7 @@ export const DEFAULT_MODEL_PROVIDER: ModelProviderPreference = "openai";
 export const DEFAULT_MODEL_SIZE: ModelSize = "large";
 export const DEFAULT_MODEL_TEMPERATURE = 0.7;
 export const DEFAULT_SYSTEM_PROMPT_ENABLED = true;
+export const LONG_RUNNING_TEST_TIMEOUT_MS = 15 * 60 * 1000;
 export const MODEL_PROVIDER_PREFERENCES: ModelProviderPreference[] = [
   "openai",
   "anthropic",

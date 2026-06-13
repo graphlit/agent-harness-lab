@@ -101,10 +101,12 @@ export async function runOpenAiAgentsLane(
       instructions,
       tools: openaiTools,
       modelSettings: {
+        toolChoice: "required",
         reasoning: {
           effort: context.reasoningEffort,
         },
       } as never,
+      resetToolChoice: true,
     });
     logOpenAiLane("run.start", {
       runId: context.runId,
@@ -116,6 +118,7 @@ export async function runOpenAiAgentsLane(
     recorder.recordPhase("openai.run.start", {
       model: OPENAI_MODELS[context.modelSize],
       toolCount: openaiTools.length,
+      toolChoice: "required_first",
       sessionId: openAiSessionId,
       streaming: {
         api: "run(stream: true).toTextStream()",

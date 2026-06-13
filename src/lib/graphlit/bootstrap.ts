@@ -16,6 +16,7 @@ import {
   DEFAULT_REASONING_EFFORT,
   GRAPHLIT_SPEC_NAMES,
   JUDGE_SPEC_NAME,
+  LONG_RUNNING_TEST_TIMEOUT_MS,
   MODEL_PROVIDER_PREFERENCES,
 } from "@/lib/constants";
 import {
@@ -48,7 +49,7 @@ const REASONING_EFFORTS: ReasoningEffort[] = ["low", "medium", "high"];
 const MODEL_SIZES: ModelSize[] = ["large", "small"];
 const MODEL_PROVIDERS = MODEL_PROVIDER_PREFERENCES;
 const ANTHROPIC_THINKING_TOKEN_LIMIT = 4_096;
-const DEFAULT_GRAPHLIT_OPERATION_TIMEOUT_MS = 15_000;
+const DEFAULT_GRAPHLIT_OPERATION_TIMEOUT_MS = LONG_RUNNING_TEST_TIMEOUT_MS;
 let bootstrapAgentHarnessLabPromise: Promise<BootstrapStatus> | null = null;
 
 function elapsed(startedAt: number): string {

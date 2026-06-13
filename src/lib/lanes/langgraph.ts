@@ -19,6 +19,14 @@ import { recordGraphlitToolCall } from "@/lib/tools/recordTool";
 import { errorMessage, safeJson } from "@/lib/utils";
 import type { BaseMessage, StoredMessage } from "@langchain/core/messages";
 
+type LangGraphToolChoice =
+  | "any"
+  | {
+      type: "allowed_tools";
+      mode: "required";
+      tools: Array<{ type: "function"; name: string }>;
+    };
+
 function logLangGraphLane(
   phase: string,
   details?: Record<string, unknown>,
@@ -151,6 +159,21 @@ function toolResultText(result: unknown): string {
   return JSON.stringify(safeJson(result)) ?? String(result ?? "");
 }
 
+function requiredFirstLangGraphToolChoice(
+  modelProvider: LaneRunContext["modelProvider"],
+  toolNames: string[],
+): LangGraphToolChoice {
+  if (modelProvider === "openai") {
+    return {
+      type: "allowed_tools",
+      mode: "required",
+      tools: toolNames.map((name) => ({ type: "function", name })),
+    };
+  }
+
+  return "any";
+}
+
 export async function runLangGraphLane(
   context: LaneRunContext,
 ): Promise<LaneRunResult> {
@@ -188,7 +211,7 @@ export async function runLangGraphLane(
       event: { phase: "langgraph.sdk.import.start" },
     });
     const [
-      { createAgent },
+      { createAgent, createMiddleware },
       { tool },
       {
         HumanMessage,
@@ -274,11 +297,33 @@ export async function runLangGraphLane(
         },
       });
     })();
+    let modelCallCount = 0;
+    const requiredFirstToolMiddleware = createMiddleware({
+      name: "RequiredFirstGraphlitToolCall",
+      wrapModelCall: async (request, handler) => {
+        const isFirstModelCall = modelCallCount === 0;
+
+        modelCallCount += 1;
+
+        if (!isFirstModelCall || langGraphTools.length === 0) {
+          return handler(request);
+        }
+
+        return handler({
+          ...request,
+          toolChoice: requiredFirstLangGraphToolChoice(
+            context.modelProvider,
+            graphlitTools.map((item) => item.tool.name),
+          ) as never,
+        });
+      },
+    });
     const agent = createAgent({
       name: "graphlit-knowledge-agent",
       model,
       tools: langGraphTools,
       systemPrompt: instructions,
+      middleware: [requiredFirstToolMiddleware],
     });
 
     recorder.mergeSession({ langGraphThreadId: threadId });
@@ -295,6 +340,7 @@ export async function runLangGraphLane(
       modelProvider: context.modelProvider,
       threadId,
       toolCount: langGraphTools.length,
+      toolChoice: "required_first",
       streaming: {
         api: "createAgent().streamEvents().messages[].text",
         cadence: "native",

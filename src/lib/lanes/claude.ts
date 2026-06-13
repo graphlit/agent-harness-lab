@@ -197,6 +197,12 @@ export async function runClaudeLane(
     const allowedTools = graphlitTools.map(
       (item) => `mcp__graphlit__${item.tool.name}`,
     );
+    const claudeInstructions = mergeAgentInstructions(
+      instructions,
+      allowedTools.length > 0
+        ? "Harness parity requirement: at the start of each new user request, call one relevant Graphlit MCP tool before producing the final answer. After that first tool call, continue with more tool calls only when they materially improve the answer."
+        : undefined,
+    );
     const requestedSessionId =
       context.laneSession?.claudeSessionId ?? crypto.randomUUID();
     let claudeSessionId = context.laneSession?.claudeSessionId;
@@ -206,6 +212,7 @@ export async function runClaudeLane(
       model: CLAUDE_MODELS[context.modelSize],
       sessionId: requestedSessionId,
       toolCount: claudeTools.length,
+      toolChoice: "prompt_required_first",
       streaming: {
         api: "query(includePartialMessages: true)",
         cadence: "partial",
@@ -220,7 +227,7 @@ export async function runClaudeLane(
           [agentName]: {
             description:
               "Answers questions using Graphlit retrieval and source inspection tools.",
-            ...(instructions ? { prompt: instructions } : {}),
+            ...(claudeInstructions ? { prompt: claudeInstructions } : {}),
             tools: allowedTools,
             model: CLAUDE_MODELS[context.modelSize],
             effort: context.reasoningEffort,

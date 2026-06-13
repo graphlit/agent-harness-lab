@@ -144,6 +144,9 @@ export async function runVercelAiLane(
       model,
       instructions,
       tools,
+      prepareStep: ({ stepNumber }) => ({
+        toolChoice: stepNumber === 0 ? "required" : "auto",
+      }),
       stopWhen: stepCountIs(8),
       providerOptions:
         context.modelProvider === "openai"
@@ -166,6 +169,7 @@ export async function runVercelAiLane(
       model: modelId,
       modelProvider: context.modelProvider,
       toolCount: Object.keys(tools).length,
+      toolChoice: "required_first",
       streaming: {
         api: "ToolLoopAgent.stream",
         cadence: "sentence",

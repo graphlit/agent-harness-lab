@@ -36,6 +36,10 @@ type GoogleStructuredEvent = {
   output?: unknown;
 };
 
+type GoogleLlmRequest = {
+  config?: Record<string, unknown>;
+};
+
 type GoogleUsageTotals = {
   inputTokens: number;
   outputTokens: number;
@@ -140,6 +144,33 @@ function addGoogleUsage(totals: GoogleUsageTotals, event: unknown): void {
   }
 }
 
+function requireGoogleFunctionCallConfig(
+  config: unknown,
+  allowedFunctionNames: string[],
+): Record<string, unknown> {
+  const currentConfig = isRecord(config) ? config : {};
+  const currentToolConfig = isRecord(currentConfig.toolConfig)
+    ? currentConfig.toolConfig
+    : {};
+  const currentFunctionCallingConfig = isRecord(
+    currentToolConfig.functionCallingConfig,
+  )
+    ? currentToolConfig.functionCallingConfig
+    : {};
+
+  return {
+    ...currentConfig,
+    toolConfig: {
+      ...currentToolConfig,
+      functionCallingConfig: {
+        ...currentFunctionCallingConfig,
+        mode: "ANY",
+        allowedFunctionNames,
+      },
+    },
+  };
+}
+
 export async function runGoogleLane(
   context: LaneRunContext,
 ): Promise<LaneRunResult> {
@@ -206,12 +237,34 @@ export async function runGoogleLane(
             item.handler(args, undefined, context.abortSignal),
         }),
     );
+    let modelCallCount = 0;
+    const requiredFirstToolCallback = ({
+      request,
+    }: {
+      request: GoogleLlmRequest;
+    }) => {
+      const isFirstModelCall = modelCallCount === 0;
+
+      modelCallCount += 1;
+
+      if (!isFirstModelCall || tools.length === 0) {
+        return undefined;
+      }
+
+      request.config = requireGoogleFunctionCallConfig(
+        request.config,
+        graphlitTools.map((item) => item.tool.name),
+      );
+
+      return undefined;
+    };
     const agent = new LlmAgent({
       name: "graphlit_knowledge_agent",
       model: GOOGLE_MODELS[context.modelSize],
       instruction: instructions,
       tools,
       includeContents: "default",
+      beforeModelCallback: requiredFirstToolCallback,
       generateContentConfig: {
         temperature: DEFAULT_MODEL_TEMPERATURE,
       },
@@ -231,6 +284,7 @@ export async function runGoogleLane(
       model: GOOGLE_MODELS[context.modelSize],
       sessionId: googleSessionId,
       toolCount: tools.length,
+      toolChoice: "required_first",
       streaming: {
         api: "Runner.runAsync",
         cadence: "native",
