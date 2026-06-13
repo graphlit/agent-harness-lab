@@ -16,7 +16,7 @@ The app runs enabled lanes in parallel:
 
 Graphlit is always enabled as the baseline. OpenAI, Vercel, LangGraph, Mastra, Claude, Google, and Judge can be toggled in the composer. Every send creates a new turn for the enabled lanes, and each lane keeps its own session state so you can compare how the agent conversations evolve over multiple prompts. Graphlit, Vercel AI SDK, LangGraph, and Mastra can use the selected model provider preference: OpenAI, Anthropic, or Google.
 
-All lanes receive the same Graphlit tools: `retrieve_contents`, `inspect_content`, `web_search`, `ingest_url`, and `wait_content_done`.
+All lanes receive the same read-only Graphlit tools: `retrieve_contents`, `inspect_content`, `count_contents`, `list_resources`, `read_resource`, `web_search`, and `web_map`. The composer can ingest files or URLs as shared setup context before a run, but agent lanes cannot ingest or mutate project content during comparison.
 
 ## Setup
 
@@ -73,7 +73,7 @@ On first load, the app verifies your Graphlit project and prepares the model set
 The flow:
 
 1. Sends the same prompt to every selected lane at the same time.
-2. Lets each lane use the same Graphlit retrieval and web tools.
+2. Lets each lane use the same read-only Graphlit project and web tools.
 3. Shows answers, tool calls, sources, and raw events inline.
 4. Keeps lane failures isolated so one provider cannot block the others.
 5. Runs the judge after at least two lanes finish successfully.

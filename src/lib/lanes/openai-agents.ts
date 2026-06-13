@@ -3,6 +3,7 @@ import "server-only";
 import { OPENAI_MODELS } from "@/lib/constants";
 import { createGraphlitClient } from "@/lib/graphlit/client";
 import { LaneRunRecorder } from "@/lib/lanes/recorder";
+import { emitTextStream } from "@/lib/lanes/streaming";
 import type { LaneRunContext, LaneRunResult } from "@/lib/types";
 import { errorMessage, safeJson } from "@/lib/utils";
 import { createGraphlitTools } from "@/lib/tools/createGraphlitTools";
@@ -110,7 +111,10 @@ export async function runOpenAiAgentsLane(
       session,
       maxTurns: 8,
       signal: context.abortSignal,
+      stream: true,
     });
+    await emitTextStream(result.toTextStream(), recorder);
+    await result.completed;
     logOpenAiLane("run.complete", {
       runId: context.runId,
       turnId: context.turnId,
@@ -121,8 +125,27 @@ export async function runOpenAiAgentsLane(
       openAiSessionId,
       openAiItems: Array.isArray(openAiItems) ? openAiItems : [],
     });
-    recorder.recordRaw(result);
-    await recorder.emitSnapshot(finalOutputText(result));
+    recorder.recordTokenUsage(
+      (result as { state?: { usage?: unknown } }).state?.usage,
+      "OpenAI Agents run usage",
+    );
+    recorder.recordRaw(
+      safeJson({
+        finalOutput: result.finalOutput,
+        lastResponseId: result.lastResponseId,
+        newItems: result.newItems,
+        rawResponses: result.rawResponses,
+        usage: (result as { state?: { usage?: unknown } }).state?.usage,
+        streaming: {
+          api: "run(stream: true).toTextStream()",
+          cadence: "native",
+        },
+      }),
+    );
+
+    if (!recorder.getAnswer()) {
+      await recorder.emitSnapshot(finalOutputText(result));
+    }
 
     return recorder.result();
   } catch (error) {

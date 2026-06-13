@@ -162,6 +162,14 @@ export async function runGoogleLane(
       sessionId: googleSessionId,
     });
     recorder.mergeSession({ googleSessionId });
+    recorder.recordRaw({
+      phase: "google.runAsync.start",
+      model: GOOGLE_MODELS[context.modelSize],
+      streaming: {
+        api: "Runner.runAsync",
+        cadence: "native",
+      },
+    });
     let finalText = "";
 
     for await (const event of runner.runAsync({

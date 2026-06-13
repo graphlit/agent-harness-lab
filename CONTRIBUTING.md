@@ -20,7 +20,7 @@ A lane is an agent harness provider that runs beside the existing Graphlit basel
 
 Good lane additions should:
 
-- Use the same Graphlit tools as the other lanes: `retrieve_contents`, `inspect_content`, `web_search`, `ingest_url`, and `wait_content_done`.
+- Use the same read-only Graphlit tools as the other lanes: `retrieve_contents`, `inspect_content`, `count_contents`, `list_resources`, `read_resource`, `web_search`, and `web_map`.
 - Run the same user prompt without adding provider-specific shortcuts that give the lane extra context.
 - Stream or record comparable events so the UI can show answers, tool calls, sources, errors, and raw events consistently.
 - Preserve lane-specific session state across turns when the provider supports conversation state.

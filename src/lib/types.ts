@@ -64,6 +64,13 @@ export interface SourceTrace {
   inspected?: boolean;
 }
 
+export interface TokenUsageTrace {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens: number;
+  source: string;
+}
+
 export interface LaneRunResult {
   turnId: string;
   laneId: LaneId;
@@ -75,6 +82,7 @@ export interface LaneRunResult {
   modelSize?: ModelSize;
   prompt: string;
   finalAnswer: string;
+  tokenUsage?: TokenUsageTrace;
   toolCalls: ToolCallTrace[];
   sources: SourceTrace[];
   rawEvents: unknown[];

@@ -112,6 +112,10 @@ export async function runGraphlitLane(
       conversationId,
       modelProvider: context.modelProvider,
       toolCount: tools.length,
+      streaming: {
+        api: "streamAgent",
+        cadence: "sentence",
+      },
     };
 
     recorder.recordRaw(startEvent);
@@ -166,6 +170,10 @@ export async function runGraphlitLane(
           }
         }
 
+        if (event.type === "conversation_completed") {
+          recorder.recordTokenUsage(event.usage, "Graphlit turn usage");
+        }
+
         if (event.type === "error") {
           const maybeError = "error" in event ? event.error : undefined;
           recorder.recordRaw({
@@ -180,7 +188,7 @@ export async function runGraphlitLane(
       tools.map((tool) => tool.tool),
       toolHandlers,
       {
-        chunkingStrategy: "word",
+        chunkingStrategy: "sentence",
         useResponsesApi: true,
         maxToolRounds: 8,
         abortSignal: context.abortSignal,

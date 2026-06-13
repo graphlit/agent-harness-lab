@@ -50,6 +50,52 @@ function extractClaudeText(message: unknown): string {
   return "";
 }
 
+function extractClaudePartial(message: unknown): {
+  text?: string;
+  thinking?: string;
+} {
+  if (
+    !message ||
+    typeof message !== "object" ||
+    !("type" in message) ||
+    message.type !== "stream_event" ||
+    !("event" in message) ||
+    !message.event ||
+    typeof message.event !== "object"
+  ) {
+    return {};
+  }
+
+  const event = message.event as {
+    type?: unknown;
+    delta?: {
+      type?: unknown;
+      text?: unknown;
+      thinking?: unknown;
+    };
+  };
+
+  if (event.type !== "content_block_delta") {
+    return {};
+  }
+
+  if (
+    event.delta?.type === "text_delta" &&
+    typeof event.delta.text === "string"
+  ) {
+    return { text: event.delta.text };
+  }
+
+  if (
+    event.delta?.type === "thinking_delta" &&
+    typeof event.delta.thinking === "string"
+  ) {
+    return { thinking: event.delta.thinking };
+  }
+
+  return {};
+}
+
 function structuredToolContent(result: unknown): Record<string, unknown> {
   if (result && typeof result === "object" && !Array.isArray(result)) {
     return result as Record<string, unknown>;
@@ -150,6 +196,15 @@ export async function runClaudeLane(
     let claudeSessionId = context.laneSession?.claudeSessionId;
     let finalText = "";
 
+    recorder.recordRaw({
+      phase: "claude.query.start",
+      model: CLAUDE_MODELS[context.modelSize],
+      streaming: {
+        api: "query(includePartialMessages: true)",
+        cadence: "partial",
+      },
+    });
+
     for await (const message of query({
       prompt: context.prompt,
       options: {
@@ -173,16 +228,46 @@ export async function runClaudeLane(
         maxTurns: 8,
         permissionMode: "dontAsk",
         effort: context.reasoningEffort,
+        includePartialMessages: true,
         ...(claudeSessionId
           ? { resume: claudeSessionId }
           : { sessionId: requestedSessionId }),
       },
     } as never)) {
       recorder.recordRaw(message);
+      const partial = extractClaudePartial(message);
+
+      if (partial.thinking) {
+        await context.emit({
+          type: "lane_reasoning_delta",
+          runId: context.runId,
+          turnId: context.turnId,
+          laneId: "claude",
+          text: partial.thinking,
+        });
+      }
+
+      if (partial.text) {
+        finalText += partial.text;
+        await recorder.emitDelta(partial.text);
+      }
+
+      if (
+        message &&
+        typeof message === "object" &&
+        "type" in message &&
+        message.type === "result" &&
+        "usage" in message
+      ) {
+        recorder.recordTokenUsage(
+          (message as { usage?: unknown }).usage,
+          "Claude Agent SDK result usage",
+        );
+      }
       claudeSessionId = readClaudeSessionId(message) ?? claudeSessionId;
       const text = extractClaudeText(message);
 
-      if (text) {
+      if (text && text !== recorder.getAnswer()) {
         finalText = text;
         await recorder.emitSnapshot(finalText);
       }

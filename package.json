@@ -21,7 +21,7 @@
     "@ai-sdk/openai": "^3.0.71",
     "@anthropic-ai/claude-agent-sdk": "^0.3.175",
     "@google/adk": "^1.2.0",
-    "@graphlit/agent-tools": "^1.0.20260611004",
+    "@graphlit/agent-tools": "^1.0.20260612003",
     "@langchain/anthropic": "^1.4.0",
     "@langchain/google-genai": "^2.1.31",
     "@langchain/langgraph": "^1.4.1",

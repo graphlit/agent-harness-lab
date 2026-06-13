@@ -3,9 +3,10 @@ import "server-only";
 import { MODEL_PROVIDER_MODEL_IDS } from "@/lib/constants";
 import { createGraphlitClient } from "@/lib/graphlit/client";
 import { LaneRunRecorder } from "@/lib/lanes/recorder";
+import { emitTextStream } from "@/lib/lanes/streaming";
 import { requireModelProviderApiKey } from "@/lib/model-provider-keys";
 import type { LaneRunContext, LaneRunResult } from "@/lib/types";
-import { errorMessage } from "@/lib/utils";
+import { errorMessage, safeJson } from "@/lib/utils";
 import { createGraphlitTools } from "@/lib/tools/createGraphlitTools";
 import { recordGraphlitToolCall } from "@/lib/tools/recordTool";
 import type { Memory as MastraMemory } from "@mastra/memory";
@@ -200,7 +201,7 @@ export async function runMastraLane(
       mastraResourceId: resourceId,
       mastraThreadId: threadId,
     });
-    logMastraLane("generate.start", {
+    logMastraLane("stream.start", {
       runId: context.runId,
       turnId: context.turnId,
       model: modelId,
@@ -209,7 +210,7 @@ export async function runMastraLane(
       threadId,
       toolCount: Object.keys(tools).length,
     });
-    const result = await agent.generate(context.prompt, {
+    const result = await agent.stream(context.prompt, {
       memory: {
         resource: resourceId,
         thread: threadId,
@@ -218,18 +219,37 @@ export async function runMastraLane(
       maxSteps: 8,
       abortSignal: context.abortSignal,
     });
-    logMastraLane("generate.complete", {
+    await emitTextStream(result.textStream, recorder);
+    const [finalText, fullOutput, totalUsage] = await Promise.all([
+      result.text,
+      result.getFullOutput(),
+      result.totalUsage,
+    ]);
+    logMastraLane("stream.complete", {
       runId: context.runId,
       turnId: context.turnId,
       resourceId,
       threadId,
     });
-    recorder.recordRaw(result);
-    await recorder.emitSnapshot(mastraOutputText(result));
+    recorder.recordTokenUsage(totalUsage, "Mastra total usage");
+    recorder.recordRaw(
+      safeJson({
+        output: fullOutput,
+        totalUsage,
+        streaming: {
+          api: "Agent.stream().textStream",
+          cadence: "native",
+        },
+      }),
+    );
+
+    if (!recorder.getAnswer()) {
+      await recorder.emitSnapshot(finalText || mastraOutputText(fullOutput));
+    }
 
     return recorder.result();
   } catch (error) {
-    logMastraLane("generate.failed", {
+    logMastraLane("stream.failed", {
       runId: context.runId,
       turnId: context.turnId,
       error: errorMessage(error),

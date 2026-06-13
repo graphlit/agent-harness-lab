@@ -3,6 +3,7 @@ import "server-only";
 import { MODEL_PROVIDER_MODEL_IDS } from "@/lib/constants";
 import { createGraphlitClient } from "@/lib/graphlit/client";
 import { LaneRunRecorder } from "@/lib/lanes/recorder";
+import { emitTextStream, sentenceChunk } from "@/lib/lanes/streaming";
 import { requireModelProviderApiKey } from "@/lib/model-provider-keys";
 import type {
   JsonValue,
@@ -65,9 +66,9 @@ export async function runVercelAiLane(
       laneId: "vercel",
       event: { phase: "vercel.sdk.import.start" },
     });
-    const [{ ToolLoopAgent, stepCountIs, tool }] = await Promise.all([
-      import("ai"),
-    ]);
+    const { ToolLoopAgent, smoothStream, stepCountIs, tool } = await import(
+      "ai"
+    );
     const modelId = MODEL_PROVIDER_MODEL_IDS[context.modelProvider][
       context.modelSize
     ];
@@ -142,35 +143,63 @@ export async function runVercelAiLane(
           : undefined,
     });
 
-    logVercelLane("generate.start", {
+    logVercelLane("stream.start", {
       runId: context.runId,
       turnId: context.turnId,
       model: modelId,
       modelProvider: context.modelProvider,
       toolCount: Object.keys(tools).length,
     });
-    const result = await agent.generate({
+    const result = await agent.stream({
       messages,
       abortSignal: context.abortSignal,
+      experimental_transform: smoothStream({
+        chunking: sentenceChunk,
+        delayInMs: 20,
+      }),
     });
-    logVercelLane("generate.complete", {
+    await emitTextStream(result.textStream, recorder);
+    const [finalText, response, totalUsage, steps, finishReason] =
+      await Promise.all([
+        result.text,
+        result.response,
+        result.totalUsage,
+        result.steps,
+        result.finishReason,
+      ]);
+    logVercelLane("stream.complete", {
       runId: context.runId,
       turnId: context.turnId,
     });
 
     const nextMessages = [
       ...messages,
-      ...(result.response?.messages ?? []),
+      ...(response.messages ?? []),
     ] as ModelMessage[];
     recorder.mergeSession({
       vercelMessages: serializableMessages(nextMessages),
     });
-    recorder.recordRaw(safeJson(result));
-    await recorder.emitSnapshot(result.text);
+    recorder.recordTokenUsage(totalUsage, "Vercel AI SDK total usage");
+    recorder.recordRaw(
+      safeJson({
+        finishReason,
+        response,
+        steps,
+        totalUsage,
+        streaming: {
+          api: "ToolLoopAgent.stream",
+          cadence: "sentence",
+        },
+      }),
+    );
+
+    if (!recorder.getAnswer()) {
+      await recorder.emitSnapshot(finalText);
+    }
 
     return recorder.result();
   } catch (error) {
-    logVercelLane("generate.failed", {
+    logVercelLane("stream.failed", {
       runId: context.runId,
       turnId: context.turnId,
       error: errorMessage(error),

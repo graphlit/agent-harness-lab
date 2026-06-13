@@ -110,7 +110,8 @@ pre {
 
   .agent-harness-lanes-scroll::-webkit-scrollbar {
     display: block;
-    height: 6px;
+    height: 3px;
+    background: transparent;
   }
 
   .agent-harness-lanes-scroll::-webkit-scrollbar-track {
@@ -119,7 +120,7 @@ pre {
 
   .agent-harness-lanes-scroll::-webkit-scrollbar-thumb {
     background: #d4d4d8;
-    border-radius: 999px;
+    border-radius: 2px;
   }
 
   :root.dark .agent-harness-lanes-scroll::-webkit-scrollbar-thumb {

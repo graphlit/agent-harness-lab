@@ -1,6 +1,7 @@
 import {
   DEFAULT_MODEL_PROVIDER,
   LANE_LABELS,
+  LANE_STREAM_LABELS,
   getLaneModelLabel,
   titleCaseEffort,
 } from "@/lib/constants";
@@ -14,6 +15,7 @@ import type {
   RunEventEmitter,
   SourceTrace,
   ToolCallTrace,
+  TokenUsageTrace,
 } from "@/lib/types";
 import { elapsedMs, nowIso, summarizeJson } from "@/lib/utils";
 
@@ -34,6 +36,75 @@ type InspectResultLike = {
   text?: string;
 };
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : undefined;
+}
+
+function numericField(
+  value: Record<string, unknown>,
+  keys: string[],
+): number | undefined {
+  for (const key of keys) {
+    const item = finiteNumber(value[key]);
+
+    if (item !== undefined) {
+      return item;
+    }
+  }
+
+  return undefined;
+}
+
+function normalizeTokenUsage(
+  value: unknown,
+  source: string,
+): TokenUsageTrace | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+
+  const inputTokens = numericField(value, [
+    "inputTokens",
+    "input_tokens",
+    "promptTokens",
+    "prompt_tokens",
+  ]);
+  const outputTokens = numericField(value, [
+    "outputTokens",
+    "output_tokens",
+    "completionTokens",
+    "completion_tokens",
+  ]);
+  const reportedTotal = numericField(value, [
+    "totalTokens",
+    "total_tokens",
+    "totalTokenCount",
+    "total_tokens_count",
+  ]);
+  const computedTotal =
+    inputTokens !== undefined && outputTokens !== undefined
+      ? inputTokens + outputTokens
+      : undefined;
+  const totalTokens = reportedTotal ?? computedTotal;
+
+  if (totalTokens === undefined) {
+    return undefined;
+  }
+
+  return {
+    inputTokens,
+    outputTokens,
+    totalTokens,
+    source,
+  };
+}
+
 export class LaneRunRecorder {
   readonly laneId: LaneId;
   readonly runId: string;
@@ -50,6 +121,7 @@ export class LaneRunRecorder {
   private readonly rawEvents: unknown[] = [];
   private session: LaneSessionState = {};
   private finalAnswer = "";
+  private tokenUsage: TokenUsageTrace | undefined;
 
   constructor(options: {
     laneId: LaneId;
@@ -69,10 +141,36 @@ export class LaneRunRecorder {
     this.modelProvider = options.modelProvider ?? DEFAULT_MODEL_PROVIDER;
     this.modelSize = options.modelSize;
     this.emit = options.emit;
+    this.rawEvents.push(
+      this.createTelemetryEvent("lane.started", this.startedAt, {
+        modelLabel: getLaneModelLabel(
+          this.laneId,
+          this.modelSize,
+          this.modelProvider,
+        ),
+        reasoningEffort: this.reasoningEffort,
+        modelProvider: this.modelProvider,
+        modelSize: this.modelSize,
+        streaming: LANE_STREAM_LABELS[this.laneId],
+      }),
+    );
   }
 
   recordRaw(event: unknown): void {
     this.rawEvents.push(event);
+  }
+
+  recordTokenUsage(usage: unknown, source: string): void {
+    const normalized = normalizeTokenUsage(usage, source);
+
+    if (normalized) {
+      this.tokenUsage = normalized;
+      this.rawEvents.push(
+        this.createTelemetryEvent("usage.reported", nowIso(), {
+          tokenUsage: normalized,
+        }),
+      );
+    }
   }
 
   setSession(session: LaneSessionState): void {
@@ -136,6 +234,13 @@ export class LaneRunRecorder {
     };
 
     this.toolCalls.set(id, call);
+    this.rawEvents.push(
+      this.createTelemetryEvent("tool.started", call.startedAt, {
+        toolCallId: id,
+        toolName: name,
+        arguments: args,
+      }),
+    );
     await this.emit({
       type: "tool_call_started",
       runId: this.runId,
@@ -166,6 +271,14 @@ export class LaneRunRecorder {
 
     this.toolCalls.set(id, call);
     this.captureSources(output, call.name);
+    this.rawEvents.push(
+      this.createTelemetryEvent("tool.completed", completedAt, {
+        toolCallId: id,
+        toolName: call.name,
+        durationMs: call.durationMs,
+        outputSummary: call.outputSummary,
+      }),
+    );
     await this.emit({
       type: "tool_call_completed",
       runId: this.runId,
@@ -195,6 +308,14 @@ export class LaneRunRecorder {
     };
 
     this.toolCalls.set(id, call);
+    this.rawEvents.push(
+      this.createTelemetryEvent("tool.failed", completedAt, {
+        toolCallId: id,
+        toolName: call.name,
+        durationMs: call.durationMs,
+        error,
+      }),
+    );
     await this.emit({
       type: "tool_call_failed",
       runId: this.runId,
@@ -208,6 +329,23 @@ export class LaneRunRecorder {
 
   result(error?: string): LaneRunResult {
     const completedAt = nowIso();
+    const durationMs = elapsedMs(this.startedAt, completedAt);
+    const rawEvents = [
+      ...this.rawEvents,
+      this.createTelemetryEvent(
+        error ? "lane.failed" : "lane.completed",
+        completedAt,
+        {
+          completedAt,
+          durationMs,
+          toolCallCount: this.toolCalls.size,
+          sourceCount: this.sources.size,
+          tokenUsage: this.tokenUsage,
+          eventCount: this.rawEvents.length + 1,
+          error,
+        },
+      ),
+    ];
 
     return {
       turnId: this.turnId,
@@ -224,14 +362,32 @@ export class LaneRunRecorder {
       modelSize: this.modelSize,
       prompt: this.prompt,
       finalAnswer: this.finalAnswer.trim(),
+      tokenUsage: this.tokenUsage,
       toolCalls: [...this.toolCalls.values()],
       sources: [...this.sources.values()],
-      rawEvents: this.rawEvents,
+      rawEvents,
       session: this.session,
       startedAt: this.startedAt,
       completedAt,
-      durationMs: elapsedMs(this.startedAt, completedAt),
+      durationMs,
       error,
+    };
+  }
+
+  private createTelemetryEvent(
+    phase: string,
+    timestamp: string,
+    details: Record<string, unknown> = {},
+  ): Record<string, unknown> {
+    return {
+      type: "lane_telemetry",
+      phase,
+      laneId: this.laneId,
+      runId: this.runId,
+      turnId: this.turnId,
+      timestamp,
+      elapsedMs: elapsedMs(this.startedAt, timestamp),
+      ...details,
     };
   }
 

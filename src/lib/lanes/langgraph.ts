@@ -3,6 +3,7 @@ import "server-only";
 import { MODEL_PROVIDER_MODEL_IDS } from "@/lib/constants";
 import { createGraphlitClient } from "@/lib/graphlit/client";
 import { LaneRunRecorder } from "@/lib/lanes/recorder";
+import { emitTextStream } from "@/lib/lanes/streaming";
 import { requireModelProviderApiKey } from "@/lib/model-provider-keys";
 import type {
   JsonValue,
@@ -101,6 +102,42 @@ function serializableStoredMessages(messages: StoredMessage[]): JsonValue[] {
   const value = safeJson(messages);
 
   return Array.isArray(value) ? (value as JsonValue[]) : [];
+}
+
+function aggregateLangGraphUsage(messages: BaseMessage[]): unknown {
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let totalTokens = 0;
+  let hasUsage = false;
+
+  for (const message of messages) {
+    const usage = (message as {
+      usage_metadata?: {
+        input_tokens?: number;
+        output_tokens?: number;
+        total_tokens?: number;
+      };
+    }).usage_metadata;
+
+    if (!usage) {
+      continue;
+    }
+
+    hasUsage = true;
+    inputTokens += usage.input_tokens ?? 0;
+    outputTokens += usage.output_tokens ?? 0;
+    totalTokens +=
+      usage.total_tokens ??
+      (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0);
+  }
+
+  return hasUsage
+    ? {
+        input_tokens: inputTokens,
+        output_tokens: outputTokens,
+        total_tokens: totalTokens,
+      }
+    : undefined;
 }
 
 function toolResultText(result: unknown): string {
@@ -236,7 +273,7 @@ export async function runLangGraphLane(
     });
 
     recorder.mergeSession({ langGraphThreadId: threadId });
-    logLangGraphLane("invoke.start", {
+    logLangGraphLane("stream.start", {
       runId: context.runId,
       turnId: context.turnId,
       model: modelId,
@@ -244,15 +281,22 @@ export async function runLangGraphLane(
       threadId,
       toolCount: langGraphTools.length,
     });
-    const result = await agent.invoke(
+    const run = await agent.streamEvents(
       { messages },
       {
+        version: "v3",
         configurable: { thread_id: threadId },
         recursionLimit: 16,
         signal: context.abortSignal,
       },
     );
-    logLangGraphLane("invoke.complete", {
+
+    for await (const message of run.messages) {
+      await emitTextStream(message.text, recorder);
+    }
+
+    const result = await run.output;
+    logLangGraphLane("stream.complete", {
       runId: context.runId,
       turnId: context.turnId,
       threadId,
@@ -261,17 +305,33 @@ export async function runLangGraphLane(
     const resultMessages = Array.isArray(result.messages)
       ? (result.messages as BaseMessage[])
       : [];
+    const currentTurnMessages = resultMessages.slice(messages.length);
     const storedMessages = mapChatMessagesToStoredMessages(resultMessages);
     recorder.mergeSession({
       langGraphThreadId: threadId,
       langGraphMessages: serializableStoredMessages(storedMessages),
     });
-    recorder.recordRaw(safeJson(result));
-    await recorder.emitSnapshot(finalLangGraphText(result));
+    recorder.recordTokenUsage(
+      aggregateLangGraphUsage(currentTurnMessages),
+      "LangGraph current turn usage",
+    );
+    recorder.recordRaw(
+      safeJson({
+        output: result,
+        streaming: {
+          api: "createAgent().streamEvents().messages[].text",
+          cadence: "native",
+        },
+      }),
+    );
+
+    if (!recorder.getAnswer()) {
+      await recorder.emitSnapshot(finalLangGraphText(result));
+    }
 
     return recorder.result();
   } catch (error) {
-    logLangGraphLane("invoke.failed", {
+    logLangGraphLane("stream.failed", {
       runId: context.runId,
       turnId: context.turnId,
       error: errorMessage(error),
