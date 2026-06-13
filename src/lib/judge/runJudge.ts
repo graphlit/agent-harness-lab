@@ -14,11 +14,9 @@ import type {
   LaneId,
   LaneRunResult,
 } from "@/lib/types";
-import { summarizeJson } from "@/lib/utils";
+import { safeJson } from "@/lib/utils";
 
 const ANONYMOUS_IDS = ["A", "B", "C", "D", "E", "F", "G", "H"] as const;
-const JUDGE_TOOL_OUTPUT_MAX_CHARS = 1_200;
-const JUDGE_SOURCE_SNIPPET_MAX_CHARS = 2_400;
 
 function deterministicShuffle<T>(items: T[], seed: string): T[] {
   const values = [...items];
@@ -41,11 +39,24 @@ function buildJudgePrompt(): string {
   return [
     "You are judging agent harness outputs for a developer-facing RAG lab.",
     "Use only the prompt, final answers, tool calls, and source traces in the input.",
+    "Use a two-pass evaluation process.",
+    "Pass 1: score each lane independently against only that lane's own final answer, tool responses, source traces, and the user prompt. Do not use other lanes as a standard when assigning retrievalUse, sourceInspection, groundedness, or unsupportedClaimRisk.",
+    "Pass 2: after every lane has an independent score, compare lanes to choose the winner, write pairwise notes, and resolve close overall rankings.",
+    "Cross-lane comparison may distinguish completeness, concision, and usefulness, but must not retroactively lower an individually supported lane because another lane retrieved richer snippets, more sources, or extra details.",
+    "Derive the answer contract from the user's prompt before scoring. For broad latest/current questions, prioritize the core facts a user would reasonably expect for that domain, such as current status, most recent material change, next expected step, and any clearly central developments.",
+    "Do not invent a hidden required checklist from details found by only some lanes. Incidental entity details, side updates, historical comparisons, metrics, quotes, examples, and background context can improve helpfulness only when they are relevant and supported, but they must not define the scoring tiers unless the user asked for that level of detail or the detail is clearly central to the answer.",
+    "A lane that answers the core question accurately and with support should remain highly grounded even if it omits optional extra details that another lane included.",
+    "When comparing lanes, treat optional supported details as tie-breakers, not as the main basis for severe penalties.",
+    "Evaluate groundedness claim by claim. A claim is supported when it appears in the lane's own evidence or is a direct, low-risk inference from that evidence.",
     "Do not use your training data, model memory, or outside facts to validate factual claims, especially for current, recent, latest, or time-sensitive topics.",
     "If an answer contains information that conflicts with your prior knowledge but is supported by the lane's retrieved or inspected sources, treat the run evidence as authoritative for judging.",
     "Only call a factual claim a hallucination when it is contradicted by the provided traces/sources or when the lane presents it without support from its own answer, tools, or sources.",
     "Use tool responses and source traces primarily to judge answer fidelity: whether the final answer accurately reflects the evidence the lane actually received.",
     "Do not penalize retrievalUse, sourceInspection, groundedness, or overallScore merely because one search provider returned shorter snippets, fewer result fields, or less verbose tool output than another provider.",
+    "Search result verbosity is a provider artifact, not an agent quality signal. A lane with shorter snippets can score as highly as a lane with longer snippets when its final answer stays within the facts present in those snippets.",
+    "Do not write that a lane failed to retrieve detailed snippets, lacked rich snippets, used empty video links, or had basic search results as a weakness unless the lane chose irrelevant queries, ignored available relevant evidence, or the final answer depended on facts not visible in its evidence.",
+    "When evidence is thin, phrase the weakness as answer-fidelity risk: identify which final-answer claims are not visible in the provided tool responses or source traces.",
+    "Do not reward a lane for receiving verbose search snippets if another lane retrieved equivalent answer-critical facts in shorter form.",
     "Score retrievalUse based on relevant tool selection, query intent, and whether the lane used the evidence it received; do not score it by raw snippet length or result verbosity.",
     "Score sourceInspection based on whether the lane inspected or used available source-level evidence when the answer required it; a short search snippet is not itself a source-inspection failure.",
     "If a lane only has brief search snippets, treat those snippets as enough support only for claims they actually contain. Penalize unsupported extra claims, not the provider's snippet brevity.",
@@ -60,6 +71,9 @@ function buildJudgePrompt(): string {
     "Use anonymousId values for structured ID fields only.",
     "Use the provided friendlyName values in all human-readable prose fields. Never write 'Lane A', 'Lane B', or similar anonymous labels in summary, winnerReason, strengths, weaknesses, traceEvidence, or pairwise notes.",
     "Example: write 'Graphlit is the best response...' instead of 'Lane C is the best response...'.",
+    "Set biasChecks.individualScoringBeforePairwise to true only if you independently scored each lane before making winner or pairwise comparisons.",
+    "Set biasChecks.providerSnippetNeutrality to true only if you avoided rewarding or penalizing lanes based on raw search snippet length or provider result verbosity.",
+    "Set biasChecks.optionalDetailNotOverweighted to true only if you did not turn optional supported details into hidden mandatory scoring criteria.",
     "Call score_agent_harness_run exactly once with the structured scores.",
   ].join(" ");
 }
@@ -74,18 +88,17 @@ function compactLaneResult(result: LaneRunResult, anonymousId: string) {
     toolCalls: result.toolCalls.map((call) => ({
       name: call.name,
       arguments: call.arguments,
-      outputSummary: summarizeJson(
-        call.output ?? call.outputSummary,
-        JUDGE_TOOL_OUTPUT_MAX_CHARS,
-      ),
+      output:
+        call.output === undefined ? call.outputSummary : safeJson(call.output),
       durationMs: call.durationMs,
       error: call.error,
     })),
     sources: result.sources.map((source) => ({
       resourceUri: source.resourceUri,
       name: source.name,
-      snippet: source.text?.slice(0, JUDGE_SOURCE_SNIPPET_MAX_CHARS),
+      text: source.text,
       relevance: source.relevance ?? null,
+      inspected: source.inspected ?? false,
     })),
     durationMs: result.durationMs,
   };

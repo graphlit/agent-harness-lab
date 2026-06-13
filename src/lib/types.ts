@@ -125,6 +125,9 @@ export interface JudgeResult {
     verbosityConsidered: boolean;
     unsupportedClaimsConsidered: boolean;
     externalKnowledgeAvoided: boolean;
+    individualScoringBeforePairwise: boolean;
+    providerSnippetNeutrality: boolean;
+    optionalDetailNotOverweighted: boolean;
   };
 }
 

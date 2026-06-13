@@ -2790,6 +2790,7 @@ function ToolTimeline({ calls }: { calls: ToolCallTrace[] }) {
             <JsonBlock
               title={call.error ? "Error" : "Result"}
               value={call.error ?? call.output}
+              copyable
             />
           </div>
         </details>
@@ -2837,14 +2838,68 @@ function SourceList({ sources }: { sources: SourceTrace[] }) {
   );
 }
 
-function JsonBlock({ title, value }: { title: string; value: unknown }) {
+function JsonBlock({
+  title,
+  value,
+  copyable = false,
+}: {
+  title: string;
+  value: unknown;
+  copyable?: boolean;
+}) {
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">(
+    "idle",
+  );
+  const displayValue = typeof value === "string" ? { value } : value;
+  const copyLabel =
+    copyState === "copied"
+      ? `Copied ${title.toLowerCase()} JSON`
+      : copyState === "failed"
+        ? `Could not copy ${title.toLowerCase()} JSON`
+        : `Copy ${title.toLowerCase()} JSON`;
+
+  async function copyJson() {
+    try {
+      await navigator.clipboard.writeText(
+        JSON.stringify(displayValue, null, 2) ?? "null",
+      );
+      setCopyState("copied");
+    } catch {
+      setCopyState("failed");
+    }
+
+    window.setTimeout(() => setCopyState("idle"), 1_200);
+  }
+
   return (
     <div className="border-b border-zinc-200 last:border-b-0 dark:border-zinc-800">
-      <div className="border-b border-zinc-200 px-2 py-1 text-xs font-semibold uppercase tracking-widest text-zinc-500 dark:border-zinc-800">
-        {title}
+      <div className="flex items-center justify-between gap-2 border-b border-zinc-200 px-2 py-1 dark:border-zinc-800">
+        <div className="text-xs font-semibold uppercase tracking-widest text-zinc-500">
+          {title}
+        </div>
+        {copyable ? (
+          <button
+            type="button"
+            aria-label={copyLabel}
+            title={copyLabel}
+            className={classNames(
+              "flex h-6 w-6 shrink-0 items-center justify-center rounded-sm text-zinc-400 transition-colors hover:bg-zinc-100 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:hover:text-zinc-100",
+              copyState === "copied" &&
+                "text-emerald-600 dark:text-emerald-400",
+              copyState === "failed" && "text-zinc-700 dark:text-zinc-200",
+            )}
+            onClick={() => void copyJson()}
+          >
+            {copyState === "copied" ? (
+              <Check className="h-3.5 w-3.5" />
+            ) : (
+              <Copy className="h-3.5 w-3.5" />
+            )}
+          </button>
+        ) : null}
       </div>
       <div className="max-h-64 overflow-auto p-2">
-        <JsonView value={typeof value === "string" ? { value } : value} />
+        <JsonView value={displayValue} />
       </div>
     </div>
   );
@@ -2894,6 +2949,12 @@ function JudgePanel({
             <div className="font-mono text-xs tabular-nums text-zinc-500">
               {judge.status}
             </div>
+            {judge.status === "running" ? (
+              <Loader2
+                className="h-3.5 w-3.5 animate-spin text-[#5865F2]"
+                aria-hidden="true"
+              />
+            ) : null}
             {judge.status === "completed" || judge.status === "failed" ? (
               <button
                 type="button"

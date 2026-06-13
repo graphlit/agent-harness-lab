@@ -37,6 +37,9 @@ export const JudgeResultSchema = z.object({
     verbosityConsidered: z.boolean(),
     unsupportedClaimsConsidered: z.boolean(),
     externalKnowledgeAvoided: z.boolean(),
+    individualScoringBeforePairwise: z.boolean(),
+    providerSnippetNeutrality: z.boolean(),
+    optionalDetailNotOverweighted: z.boolean(),
   }),
 });
 
@@ -175,12 +178,30 @@ export const scoreAgentHarnessRunJsonSchema = {
           description:
             "True when the judge avoided using training data, model memory, or outside facts as factual ground truth and relied only on provided traces and sources.",
         },
+        individualScoringBeforePairwise: {
+          type: "boolean",
+          description:
+            "True when the judge scored each lane independently against that lane's own evidence before making winner or pairwise comparisons.",
+        },
+        providerSnippetNeutrality: {
+          type: "boolean",
+          description:
+            "True when the judge did not reward or penalize lanes based on raw search snippet length, provider result verbosity, or whether a search provider returned rich snippets.",
+        },
+        optionalDetailNotOverweighted: {
+          type: "boolean",
+          description:
+            "True when the judge did not turn optional supported details into hidden mandatory scoring criteria beyond the user's prompt.",
+        },
       },
       required: [
         "laneOrderRandomized",
         "verbosityConsidered",
         "unsupportedClaimsConsidered",
         "externalKnowledgeAvoided",
+        "individualScoringBeforePairwise",
+        "providerSnippetNeutrality",
+        "optionalDetailNotOverweighted",
       ],
     },
   },
