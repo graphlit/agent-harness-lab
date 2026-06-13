@@ -7,12 +7,12 @@ const NullableJudgeLaneIdSchema = z.preprocess(
 
 export const JudgeLaneScoreSchema = z.object({
   anonymousId: z.string(),
-  overallScore: z.number().int().min(0).max(5),
-  retrievalUse: z.number().int().min(0).max(5),
-  sourceInspection: z.number().int().min(0).max(5),
-  groundedness: z.number().int().min(0).max(5),
-  answerHelpfulness: z.number().int().min(0).max(5),
-  unsupportedClaimRisk: z.number().int().min(0).max(5),
+  overallScore: z.number().int().min(0).max(10),
+  retrievalUse: z.number().int().min(0).max(10),
+  sourceInspection: z.number().int().min(0).max(10),
+  groundedness: z.number().int().min(0).max(10),
+  answerHelpfulness: z.number().int().min(0).max(10),
+  unsupportedClaimRisk: z.number().int().min(0).max(10),
   traceEvidence: z.array(z.string()).default([]),
   strengths: z.array(z.string()).default([]),
   weaknesses: z.array(z.string()).default([]),
@@ -36,6 +36,7 @@ export const JudgeResultSchema = z.object({
     laneOrderRandomized: z.boolean(),
     verbosityConsidered: z.boolean(),
     unsupportedClaimsConsidered: z.boolean(),
+    externalKnowledgeAvoided: z.boolean(),
   }),
 });
 
@@ -65,12 +66,47 @@ export const scoreAgentHarnessRunJsonSchema = {
         type: "object",
         properties: {
           anonymousId: { type: "string" },
-          overallScore: { type: "integer", minimum: 0, maximum: 5 },
-          retrievalUse: { type: "integer", minimum: 0, maximum: 5 },
-          sourceInspection: { type: "integer", minimum: 0, maximum: 5 },
-          groundedness: { type: "integer", minimum: 0, maximum: 5 },
-          answerHelpfulness: { type: "integer", minimum: 0, maximum: 5 },
-          unsupportedClaimRisk: { type: "integer", minimum: 0, maximum: 5 },
+          overallScore: {
+            type: "integer",
+            minimum: 0,
+            maximum: 10,
+            description:
+              "Holistic response quality score derived from the same dimensions. Higher is better.",
+          },
+          retrievalUse: {
+            type: "integer",
+            minimum: 0,
+            maximum: 10,
+            description: "How well the lane retrieved relevant evidence.",
+          },
+          sourceInspection: {
+            type: "integer",
+            minimum: 0,
+            maximum: 10,
+            description:
+              "How well the lane inspected or used source details after retrieval.",
+          },
+          groundedness: {
+            type: "integer",
+            minimum: 0,
+            maximum: 10,
+            description:
+              "How well the answer is supported by the available traces and sources.",
+          },
+          answerHelpfulness: {
+            type: "integer",
+            minimum: 0,
+            maximum: 10,
+            description:
+              "Completeness, directness, clarity, and usefulness of the final answer. Higher is better.",
+          },
+          unsupportedClaimRisk: {
+            type: "integer",
+            minimum: 0,
+            maximum: 10,
+            description:
+              "Risk that the answer contains unsupported or overconfident claims. Lower is better.",
+          },
           traceEvidence: {
             type: "array",
             items: { type: "string" },
@@ -134,11 +170,17 @@ export const scoreAgentHarnessRunJsonSchema = {
         laneOrderRandomized: { type: "boolean" },
         verbosityConsidered: { type: "boolean" },
         unsupportedClaimsConsidered: { type: "boolean" },
+        externalKnowledgeAvoided: {
+          type: "boolean",
+          description:
+            "True when the judge avoided using training data, model memory, or outside facts as factual ground truth and relied only on provided traces and sources.",
+        },
       },
       required: [
         "laneOrderRandomized",
         "verbosityConsidered",
         "unsupportedClaimsConsidered",
+        "externalKnowledgeAvoided",
       ],
     },
   },

@@ -124,6 +124,7 @@ export interface JudgeResult {
     laneOrderRandomized: boolean;
     verbosityConsidered: boolean;
     unsupportedClaimsConsidered: boolean;
+    externalKnowledgeAvoided: boolean;
   };
 }
 
@@ -137,6 +138,7 @@ export interface RunRequest {
   modelProvider?: ModelProviderPreference;
   modelSize?: ModelSize;
   systemPromptEnabled?: boolean;
+  runtimeUtc?: string;
   laneSessions?: Partial<Record<LaneId, LaneSessionState>>;
 }
 
@@ -276,6 +278,8 @@ export interface LaneRunContext {
   modelProvider: ModelProviderPreference;
   modelSize: ModelSize;
   systemPrompt?: string;
+  runtimeInstructions?: string;
+  runtimeUtc?: string;
   emit: RunEventEmitter;
   abortSignal?: AbortSignal;
   laneSession?: LaneSessionState;

@@ -5,7 +5,7 @@ import type {
   SdkMcpToolDefinition,
 } from "@anthropic-ai/claude-agent-sdk";
 
-import { CLAUDE_MODELS } from "@/lib/constants";
+import { CLAUDE_MODELS, mergeAgentInstructions } from "@/lib/constants";
 import { createGraphlitClient } from "@/lib/graphlit/client";
 import { LaneRunRecorder } from "@/lib/lanes/recorder";
 import type { LaneRunContext, LaneRunResult } from "@/lib/types";
@@ -143,8 +143,13 @@ export async function runClaudeLane(
   const graphlitTools = createGraphlitTools(client).map((item) =>
     recordGraphlitToolCall(item, recorder),
   );
+  const instructions = mergeAgentInstructions(
+    context.systemPrompt,
+    context.runtimeInstructions,
+  );
 
   try {
+    recorder.recordPhase("claude.sdk.import.start");
     await context.emit({
       type: "lane_trace",
       runId: context.runId,
@@ -155,6 +160,7 @@ export async function runClaudeLane(
     const { createSdkMcpServer, query, tool } = await import(
       "@anthropic-ai/claude-agent-sdk"
     );
+    recorder.recordPhase("claude.sdk.import.complete");
     await context.emit({
       type: "lane_trace",
       runId: context.runId,
@@ -196,9 +202,10 @@ export async function runClaudeLane(
     let claudeSessionId = context.laneSession?.claudeSessionId;
     let finalText = "";
 
-    recorder.recordRaw({
-      phase: "claude.query.start",
+    recorder.recordPhase("claude.query.start", {
       model: CLAUDE_MODELS[context.modelSize],
+      sessionId: requestedSessionId,
+      toolCount: claudeTools.length,
       streaming: {
         api: "query(includePartialMessages: true)",
         cadence: "partial",
@@ -213,7 +220,7 @@ export async function runClaudeLane(
           [agentName]: {
             description:
               "Answers questions using Graphlit retrieval and source inspection tools.",
-            ...(context.systemPrompt ? { prompt: context.systemPrompt } : {}),
+            ...(instructions ? { prompt: instructions } : {}),
             tools: allowedTools,
             model: CLAUDE_MODELS[context.modelSize],
             effort: context.reasoningEffort,
@@ -260,8 +267,8 @@ export async function runClaudeLane(
         "usage" in message
       ) {
         recorder.recordTokenUsage(
-          (message as { usage?: unknown }).usage,
-          "Claude Agent SDK result usage",
+          message,
+          "Claude Agent SDK result turn weight",
         );
       }
       claudeSessionId = readClaudeSessionId(message) ?? claudeSessionId;
@@ -279,6 +286,9 @@ export async function runClaudeLane(
 
     recorder.mergeSession({
       claudeSessionId: claudeSessionId ?? requestedSessionId,
+    });
+    recorder.recordPhase("claude.query.complete", {
+      sessionId: claudeSessionId ?? requestedSessionId,
     });
 
     return recorder.result();

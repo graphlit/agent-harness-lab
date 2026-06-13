@@ -1,6 +1,9 @@
 import "server-only";
 
-import { MODEL_PROVIDER_MODEL_IDS } from "@/lib/constants";
+import {
+  MODEL_PROVIDER_MODEL_IDS,
+  mergeAgentInstructions,
+} from "@/lib/constants";
 import { createGraphlitClient } from "@/lib/graphlit/client";
 import { LaneRunRecorder } from "@/lib/lanes/recorder";
 import { emitTextStream, sentenceChunk } from "@/lib/lanes/streaming";
@@ -53,12 +56,17 @@ export async function runVercelAiLane(
   const graphlitTools = createGraphlitTools(client).map((item) =>
     recordGraphlitToolCall(item, recorder),
   );
+  const instructions = mergeAgentInstructions(
+    context.systemPrompt,
+    context.runtimeInstructions,
+  );
 
   try {
     logVercelLane("sdk.import.start", {
       runId: context.runId,
       turnId: context.turnId,
     });
+    recorder.recordPhase("vercel.sdk.import.start");
     await context.emit({
       type: "lane_trace",
       runId: context.runId,
@@ -97,6 +105,10 @@ export async function runVercelAiLane(
       runId: context.runId,
       turnId: context.turnId,
     });
+    recorder.recordPhase("vercel.sdk.import.complete", {
+      model: modelId,
+      modelProvider: context.modelProvider,
+    });
     await context.emit({
       type: "lane_trace",
       runId: context.runId,
@@ -130,7 +142,7 @@ export async function runVercelAiLane(
     const agent = new ToolLoopAgent({
       id: "graphlit-knowledge-agent",
       model,
-      instructions: context.systemPrompt,
+      instructions,
       tools,
       stopWhen: stepCountIs(8),
       providerOptions:
@@ -149,6 +161,15 @@ export async function runVercelAiLane(
       model: modelId,
       modelProvider: context.modelProvider,
       toolCount: Object.keys(tools).length,
+    });
+    recorder.recordPhase("vercel.stream.start", {
+      model: modelId,
+      modelProvider: context.modelProvider,
+      toolCount: Object.keys(tools).length,
+      streaming: {
+        api: "ToolLoopAgent.stream",
+        cadence: "sentence",
+      },
     });
     const result = await agent.stream({
       messages,
@@ -170,6 +191,9 @@ export async function runVercelAiLane(
     logVercelLane("stream.complete", {
       runId: context.runId,
       turnId: context.turnId,
+    });
+    recorder.recordPhase("vercel.stream.complete", {
+      finishReason,
     });
 
     const nextMessages = [

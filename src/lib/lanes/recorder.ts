@@ -69,24 +69,44 @@ function normalizeTokenUsage(
     return undefined;
   }
 
-  const inputTokens = numericField(value, [
+  const usage = isRecord(value.usage) ? value.usage : value;
+  const baseInputTokens = numericField(usage, [
     "inputTokens",
     "input_tokens",
     "promptTokens",
     "prompt_tokens",
+    "promptTokenCount",
+    "prompt_token_count",
   ]);
-  const outputTokens = numericField(value, [
+  const anthropicCacheInputTokens = numericField(usage, [
+    "cache_creation_input_tokens",
+  ]);
+  const anthropicCacheReadTokens = numericField(usage, [
+    "cache_read_input_tokens",
+  ]);
+  const inputTokens =
+    baseInputTokens === undefined
+      ? undefined
+      : baseInputTokens +
+        (anthropicCacheInputTokens ?? 0) +
+        (anthropicCacheReadTokens ?? 0);
+  const outputTokens = numericField(usage, [
     "outputTokens",
     "output_tokens",
     "completionTokens",
     "completion_tokens",
+    "candidatesTokenCount",
+    "candidates_token_count",
   ]);
-  const reportedTotal = numericField(value, [
+  const totalFields = [
     "totalTokens",
     "total_tokens",
     "totalTokenCount",
+    "total_token_count",
     "total_tokens_count",
-  ]);
+  ];
+  const reportedTotal =
+    numericField(value, totalFields) ?? numericField(usage, totalFields);
   const computedTotal =
     inputTokens !== undefined && outputTokens !== undefined
       ? inputTokens + outputTokens
@@ -158,6 +178,10 @@ export class LaneRunRecorder {
 
   recordRaw(event: unknown): void {
     this.rawEvents.push(event);
+  }
+
+  recordPhase(phase: string, details: Record<string, unknown> = {}): void {
+    this.rawEvents.push(this.createTelemetryEvent(phase, nowIso(), details));
   }
 
   recordTokenUsage(usage: unknown, source: string): void {

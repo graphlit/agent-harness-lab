@@ -1,6 +1,6 @@
 import "server-only";
 
-import { OPENAI_MODELS } from "@/lib/constants";
+import { OPENAI_MODELS, mergeAgentInstructions } from "@/lib/constants";
 import { createGraphlitClient } from "@/lib/graphlit/client";
 import { LaneRunRecorder } from "@/lib/lanes/recorder";
 import { emitTextStream } from "@/lib/lanes/streaming";
@@ -48,12 +48,17 @@ export async function runOpenAiAgentsLane(
   const tools = createGraphlitTools(client).map((item) =>
     recordGraphlitToolCall(item, recorder),
   );
+  const instructions = mergeAgentInstructions(
+    context.systemPrompt,
+    context.runtimeInstructions,
+  );
 
   try {
     logOpenAiLane("sdk.import.start", {
       runId: context.runId,
       turnId: context.turnId,
     });
+    recorder.recordPhase("openai.sdk.import.start");
     await context.emit({
       type: "lane_trace",
       runId: context.runId,
@@ -66,6 +71,7 @@ export async function runOpenAiAgentsLane(
       runId: context.runId,
       turnId: context.turnId,
     });
+    recorder.recordPhase("openai.sdk.import.complete");
     await context.emit({
       type: "lane_trace",
       runId: context.runId,
@@ -92,7 +98,7 @@ export async function runOpenAiAgentsLane(
     const agent = new Agent({
       name: "Graphlit Knowledge Agent",
       model: OPENAI_MODELS[context.modelSize],
-      instructions: context.systemPrompt,
+      instructions,
       tools: openaiTools,
       modelSettings: {
         reasoning: {
@@ -107,6 +113,15 @@ export async function runOpenAiAgentsLane(
       toolCount: openaiTools.length,
       sessionId: openAiSessionId,
     });
+    recorder.recordPhase("openai.run.start", {
+      model: OPENAI_MODELS[context.modelSize],
+      toolCount: openaiTools.length,
+      sessionId: openAiSessionId,
+      streaming: {
+        api: "run(stream: true).toTextStream()",
+        cadence: "native",
+      },
+    });
     const result = await run(agent, context.prompt, {
       session,
       maxTurns: 8,
@@ -119,6 +134,10 @@ export async function runOpenAiAgentsLane(
       runId: context.runId,
       turnId: context.turnId,
       sessionId: openAiSessionId,
+    });
+    recorder.recordPhase("openai.run.complete", {
+      sessionId: openAiSessionId,
+      lastResponseId: result.lastResponseId,
     });
     const openAiItems = safeJson(await session.getItems());
     recorder.mergeSession({

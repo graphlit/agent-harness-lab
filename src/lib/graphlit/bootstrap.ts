@@ -10,6 +10,7 @@ import { Types } from "graphlit-client";
 import {
   AGENT_HARNESS_LAB_BOOTSTRAP_VERSION,
   DEFAULT_LANES,
+  DEFAULT_MODEL_TEMPERATURE,
   DEFAULT_MODEL_PROVIDER,
   DEFAULT_MODEL_SIZE,
   DEFAULT_REASONING_EFFORT,
@@ -275,8 +276,8 @@ function buildGraphlitSpecification(
     systemPrompt: null,
     searchType: Types.ConversationSearchTypes.None,
     strategy: {
-      enableSummarization: true,
-      enableEntityExtraction: true,
+      enableSummarization: false,
+      enableEntityExtraction: false,
       enableFactExtraction: false,
       toolRoundLimit: 8,
       toolResultTokenLimit: 6_000,
@@ -292,7 +293,7 @@ function buildGraphlitSpecification(
           modelSize === "large"
             ? Types.AnthropicModels.Claude_4_8Opus
             : Types.AnthropicModels.Claude_4_6Sonnet,
-        temperature: 0.2,
+        temperature: DEFAULT_MODEL_TEMPERATURE,
         effort: mapAnthropicEffort(effort),
         enableThinking: effort !== "low",
         thinkingTokenLimit:
@@ -310,7 +311,7 @@ function buildGraphlitSpecification(
           modelSize === "large"
             ? Types.GoogleModels.Gemini_3ProPreview
             : Types.GoogleModels.GeminiFlashLatest,
-        temperature: 0.2,
+        temperature: DEFAULT_MODEL_TEMPERATURE,
         enableThinking: true,
         thinkingLevel: mapGoogleThinkingLevel(effort, modelSize),
       },
@@ -325,7 +326,7 @@ function buildGraphlitSpecification(
         modelSize === "large"
           ? Types.OpenAiModels.Gpt55_1024K
           : Types.OpenAiModels.Gpt5Mini_400K,
-      temperature: 0.2,
+      temperature: DEFAULT_MODEL_TEMPERATURE,
       reasoningEffort: mapOpenAiReasoningEffort(effort),
     },
   };
@@ -338,7 +339,9 @@ function buildJudgeSpecification(): Types.SpecificationInput {
     serviceType: Types.ModelServiceTypes.Google,
     google: {
       model: Types.GoogleModels.Gemini_3_5Flash,
-      temperature: 0,
+      temperature: DEFAULT_MODEL_TEMPERATURE,
+      enableThinking: true,
+      thinkingLevel: Types.GoogleThinkingLevels.High,
     },
   };
 }

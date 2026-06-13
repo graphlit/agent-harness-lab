@@ -5,6 +5,7 @@ import { GoogleGenAI } from "@google/genai";
 import OpenAI from "openai";
 import type { AgentStreamEvent } from "graphlit-client";
 
+import { mergeAgentInstructions } from "@/lib/constants";
 import { createGraphlitClient } from "@/lib/graphlit/client";
 import { LaneRunRecorder } from "@/lib/lanes/recorder";
 import { requireModelProviderApiKey } from "@/lib/model-provider-keys";
@@ -104,6 +105,10 @@ export async function runGraphlitLane(
     recordGraphlitToolCall(tool, recorder),
   );
   const toolHandlers = toStreamAgentToolHandlers(tools);
+  const instructions = mergeAgentInstructions(
+    context.systemPrompt,
+    context.runtimeInstructions,
+  );
 
   try {
     const startEvent = {
@@ -199,7 +204,7 @@ export async function runGraphlitLane(
       undefined,
       undefined,
       undefined,
-      context.systemPrompt,
+      instructions,
     );
     const completeEvent = {
       phase: "graphlit.streamAgent.complete",

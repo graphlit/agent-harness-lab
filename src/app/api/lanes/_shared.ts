@@ -8,6 +8,7 @@ import {
   DEFAULT_SYSTEM_PROMPT_ENABLED,
   LANE_LABELS,
   SYSTEM_PROMPT,
+  createRuntimeInstructions,
 } from "@/lib/constants";
 import {
   type LabRunEvent,
@@ -36,6 +37,7 @@ const LaneRunRequestSchema = z.object({
     .default(DEFAULT_MODEL_PROVIDER),
   modelSize: z.enum(["large", "small"]).default(DEFAULT_MODEL_SIZE),
   systemPromptEnabled: z.boolean().default(DEFAULT_SYSTEM_PROMPT_ENABLED),
+  runtimeUtc: z.string().datetime().optional(),
   laneSession: z.record(z.string(), z.unknown()).default({}),
 });
 
@@ -152,6 +154,9 @@ export function createLaneRoute(laneId: LaneId, loadLaneRunner: LaneRunnerLoader
       .modelProvider as ModelProviderPreference;
     const modelSize = parsed.data.modelSize as ModelSize;
     const systemPromptEnabled = parsed.data.systemPromptEnabled;
+    const runtimeContext = createRuntimeInstructions(
+      parsed.data.runtimeUtc ?? new Date(),
+    );
     const laneSession = parsed.data.laneSession as LaneSessionState;
 
     logLaneRoute(laneId, "request.received", {
@@ -162,6 +167,7 @@ export function createLaneRoute(laneId: LaneId, loadLaneRunner: LaneRunnerLoader
       modelProvider,
       modelSize,
       systemPromptEnabled,
+      runtimeUtc: runtimeContext.currentUtc,
     });
 
     const stream = createNdjsonStream(async (emit) => {
@@ -207,6 +213,8 @@ export function createLaneRoute(laneId: LaneId, loadLaneRunner: LaneRunnerLoader
             modelProvider,
             reasoningEffort,
             systemPromptEnabled,
+            runtimeUtc: runtimeContext.currentUtc,
+            runtimeInstructionsProvided: true,
           },
         });
         logLaneRoute(laneId, "lane.invoke.start", { runId, turnId });
@@ -225,6 +233,8 @@ export function createLaneRoute(laneId: LaneId, loadLaneRunner: LaneRunnerLoader
               modelProvider,
               modelSize,
               systemPrompt: systemPromptEnabled ? SYSTEM_PROMPT : undefined,
+              runtimeInstructions: runtimeContext.text,
+              runtimeUtc: runtimeContext.currentUtc,
               emit,
               abortSignal,
               laneSession,

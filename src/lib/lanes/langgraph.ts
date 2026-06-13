@@ -1,6 +1,9 @@
 import "server-only";
 
-import { MODEL_PROVIDER_MODEL_IDS } from "@/lib/constants";
+import {
+  MODEL_PROVIDER_MODEL_IDS,
+  mergeAgentInstructions,
+} from "@/lib/constants";
 import { createGraphlitClient } from "@/lib/graphlit/client";
 import { LaneRunRecorder } from "@/lib/lanes/recorder";
 import { emitTextStream } from "@/lib/lanes/streaming";
@@ -166,12 +169,17 @@ export async function runLangGraphLane(
   const graphlitTools = createGraphlitTools(client).map((item) =>
     recordGraphlitToolCall(item, recorder),
   );
+  const instructions = mergeAgentInstructions(
+    context.systemPrompt,
+    context.runtimeInstructions,
+  );
 
   try {
     logLangGraphLane("sdk.import.start", {
       runId: context.runId,
       turnId: context.turnId,
     });
+    recorder.recordPhase("langgraph.sdk.import.start");
     await context.emit({
       type: "lane_trace",
       runId: context.runId,
@@ -196,6 +204,7 @@ export async function runLangGraphLane(
       runId: context.runId,
       turnId: context.turnId,
     });
+    recorder.recordPhase("langgraph.sdk.import.complete");
     await context.emit({
       type: "lane_trace",
       runId: context.runId,
@@ -269,7 +278,7 @@ export async function runLangGraphLane(
       name: "graphlit-knowledge-agent",
       model,
       tools: langGraphTools,
-      systemPrompt: context.systemPrompt,
+      systemPrompt: instructions,
     });
 
     recorder.mergeSession({ langGraphThreadId: threadId });
@@ -280,6 +289,16 @@ export async function runLangGraphLane(
       modelProvider: context.modelProvider,
       threadId,
       toolCount: langGraphTools.length,
+    });
+    recorder.recordPhase("langgraph.stream.start", {
+      model: modelId,
+      modelProvider: context.modelProvider,
+      threadId,
+      toolCount: langGraphTools.length,
+      streaming: {
+        api: "createAgent().streamEvents().messages[].text",
+        cadence: "native",
+      },
     });
     const run = await agent.streamEvents(
       { messages },
@@ -299,6 +318,9 @@ export async function runLangGraphLane(
     logLangGraphLane("stream.complete", {
       runId: context.runId,
       turnId: context.turnId,
+      threadId,
+    });
+    recorder.recordPhase("langgraph.stream.complete", {
       threadId,
     });
 

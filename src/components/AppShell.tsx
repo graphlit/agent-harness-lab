@@ -61,6 +61,7 @@ import {
   type ReasoningEffort,
   type SourceTrace,
   type ToolCallTrace,
+  type TokenUsageTrace,
 } from "@/lib/types";
 
 type LaneTurnUiState = {
@@ -226,6 +227,12 @@ function updateLaneTurn(
   return { ...state, turns };
 }
 
+function withReceivedAt(event: LabRunEvent): LabRunEvent & {
+  receivedAt: string;
+} {
+  return { ...event, receivedAt: new Date().toISOString() };
+}
+
 function defaultEnabledLanes(bootstrap: BootstrapStatus | null): Set<LaneId> {
   const lanes = new Set<LaneId>(["graphlit"]);
 
@@ -304,35 +311,37 @@ function nextLaneState(
     return state;
   }
 
+  const recordedEvent = withReceivedAt(event);
+
   switch (event.type) {
     case "lane_started":
       return updateLaneTurn(state, turnId, (turn) => ({
         ...turn,
         status: "running",
-        rawEvents: [...turn.rawEvents, event],
+        rawEvents: [...turn.rawEvents, recordedEvent],
       }));
     case "lane_trace":
       return updateLaneTurn(state, turnId, (turn) => ({
         ...turn,
-        rawEvents: [...turn.rawEvents, event],
+        rawEvents: [...turn.rawEvents, recordedEvent],
       }));
     case "lane_message_delta":
       return updateLaneTurn(state, turnId, (turn) => ({
         ...turn,
         answer: `${turn.answer}${event.text}`,
-        rawEvents: [...turn.rawEvents, event],
+        rawEvents: [...turn.rawEvents, recordedEvent],
       }));
     case "lane_message_snapshot":
       return updateLaneTurn(state, turnId, (turn) => ({
         ...turn,
         answer: event.text,
-        rawEvents: [...turn.rawEvents, event],
+        rawEvents: [...turn.rawEvents, recordedEvent],
       }));
     case "lane_reasoning_delta":
       return updateLaneTurn(state, turnId, (turn) => ({
         ...turn,
         reasoning: `${turn.reasoning}${event.text}`,
-        rawEvents: [...turn.rawEvents, event],
+        rawEvents: [...turn.rawEvents, recordedEvent],
       }));
     case "tool_call_started":
       return updateLaneTurn(state, turnId, (turn) => ({
@@ -342,7 +351,7 @@ function nextLaneState(
           ...turn.toolCalls.filter((call) => call.id !== event.call.id),
           event.call,
         ],
-        rawEvents: [...turn.rawEvents, event],
+        rawEvents: [...turn.rawEvents, recordedEvent],
       }));
     case "tool_call_completed":
     case "tool_call_failed":
@@ -352,7 +361,7 @@ function nextLaneState(
         toolCalls: turn.toolCalls.map((call) =>
           call.id === event.call.id ? event.call : call,
         ),
-        rawEvents: [...turn.rawEvents, event],
+        rawEvents: [...turn.rawEvents, recordedEvent],
       }));
     case "lane_completed":
       return updateLaneTurn(
@@ -368,7 +377,11 @@ function nextLaneState(
           answer: event.result.finalAnswer || turn.answer,
           sources: event.result.sources,
           toolCalls: event.result.toolCalls,
-          rawEvents: [...turn.rawEvents, ...event.result.rawEvents, event],
+          rawEvents: [
+            ...turn.rawEvents,
+            ...event.result.rawEvents,
+            recordedEvent,
+          ],
           result: event.result,
         }),
       );
@@ -378,7 +391,7 @@ function nextLaneState(
         status: "failed",
         completedAt: turn.completedAt ?? new Date().toISOString(),
         error: event.error,
-        rawEvents: [...turn.rawEvents, event],
+        rawEvents: [...turn.rawEvents, recordedEvent],
       }));
     default:
       return state;
@@ -415,6 +428,23 @@ function formatElapsedMs(ms: number): string {
 
 function formatTokenCount(value: number | null): string {
   return value === null ? "— TOK" : `${value.toLocaleString()} TOK`;
+}
+
+function formatTokenUsageTitle(usage?: TokenUsageTrace): string {
+  if (!usage) {
+    return "Turn weight unavailable: provider-reported model token usage was not returned.";
+  }
+
+  const inputText =
+    usage.inputTokens === undefined
+      ? "unknown input"
+      : `${usage.inputTokens.toLocaleString()} input`;
+  const outputText =
+    usage.outputTokens === undefined
+      ? "unknown output"
+      : `${usage.outputTokens.toLocaleString()} output`;
+
+  return `Turn weight: ${inputText} + ${outputText} = ${usage.totalTokens.toLocaleString()} total model tokens. Source: ${usage.source}.`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1014,6 +1044,7 @@ export function AppShell() {
     runSequenceRef.current = runSequence;
     const runId = createClientId("run");
     const turnId = createClientId("turn");
+    const runtimeUtc = new Date().toISOString();
     const activeSessionId = getSessionId();
     const selectedLaneSet = new Set(selectedLanes);
     const priorVisibleLaneIds = LANE_IDS.filter((laneId) =>
@@ -1078,6 +1109,7 @@ export function AppShell() {
             modelProvider,
             modelSize,
             systemPromptEnabled,
+            runtimeUtc,
             laneSession: laneSessions[laneId],
           }),
           signal: laneRequest.signal,
@@ -2012,7 +2044,7 @@ function SystemPromptSwitch({
       </button>
       {isPromptOpen ? (
         <div className="fixed bottom-36 left-4 right-4 z-50 mx-auto max-w-2xl">
-          <div className="rounded-md border border-zinc-200 bg-white p-3 text-left shadow-xl dark:border-zinc-800 dark:bg-zinc-950">
+          <div className="flex max-h-[min(28rem,calc(100vh-10rem))] flex-col rounded-md border border-zinc-200 bg-white p-3 text-left shadow-xl dark:border-zinc-800 dark:bg-zinc-950">
             <div className="mb-2 flex items-center justify-between gap-3">
               <div className="font-mono text-[10px] uppercase tracking-widest text-zinc-500">
                 {enabled ? "Optimized System Prompt" : "Provider Defaults"}
@@ -2026,7 +2058,7 @@ function SystemPromptSwitch({
                 <X className="h-3.5 w-3.5" />
               </button>
             </div>
-            <pre className="max-h-44 whitespace-pre-wrap rounded-sm bg-zinc-50 p-3 text-[11px] leading-5 text-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
+            <pre className="min-h-0 flex-1 overflow-y-auto whitespace-pre-wrap rounded-sm bg-zinc-50 p-3 text-[11px] leading-5 text-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
               {enabled
                 ? SYSTEM_PROMPT
                 : "No optimized system prompt is sent. Each harness uses its provider or SDK defaults."}
@@ -2217,8 +2249,12 @@ function LaneTurn({
   nowMs: number;
 }) {
   const tokenCount = useMemo(() => turnTokenCount(turn), [turn]);
-  const tokenUsageSource = turn.result?.tokenUsage?.source;
+  const tokenUsage = turn.result?.tokenUsage;
   const eventStream = useMemo(() => turnEventStream(turn), [turn]);
+  const eventMetrics = useMemo(
+    () => turnEventSummary(turn, eventStream),
+    [eventStream, turn],
+  );
 
   return (
     <div className="border-b border-zinc-200/80 p-4 last:border-b-0 dark:border-zinc-800/50">
@@ -2239,11 +2275,7 @@ function LaneTurn({
           </span>
           <span
             className="flex items-center gap-1 font-mono text-[9px] uppercase tracking-widest tabular-nums text-zinc-400 dark:text-zinc-600"
-            title={
-              tokenUsageSource
-                ? `Provider-reported run usage: ${tokenUsageSource}`
-                : "Provider-reported run usage unavailable"
-            }
+            title={formatTokenUsageTitle(tokenUsage)}
           >
             <Hash className="h-2.5 w-2.5" />
             {formatTokenCount(tokenCount)}
@@ -2255,7 +2287,12 @@ function LaneTurn({
           {turn.prompt}
         </div>
       </Section>
-      <Section title="Answer">
+      <Section
+        title="Answer"
+        action={
+          turn.answer ? <CopyMarkdownButton value={turn.answer} /> : undefined
+        }
+      >
         {turn.error ? (
           <div className="rounded-sm border border-zinc-200 bg-zinc-50 p-2 font-mono text-xs tabular-nums text-zinc-700 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300">
             {turn.error}
@@ -2287,6 +2324,7 @@ function LaneTurn({
         <SourceList sources={turn.sources} />
       </Section>
       <section className="border-b border-zinc-200/80 p-4 dark:border-zinc-800/50">
+        <EventSummary metrics={eventMetrics} />
         <EventStreamDetails events={eventStream} />
       </section>
     </div>
@@ -2295,18 +2333,66 @@ function LaneTurn({
 
 function Section({
   title,
+  action,
   children,
 }: {
   title: string;
+  action?: ReactNode;
   children: ReactNode;
 }) {
   return (
     <section className="border-b border-zinc-200/80 p-4 dark:border-zinc-800/50">
-      <div className="mb-2 text-xs font-semibold uppercase tracking-widest text-zinc-500">
-        {title}
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <div className="text-xs font-semibold uppercase tracking-widest text-zinc-500">
+          {title}
+        </div>
+        {action}
       </div>
       {children}
     </section>
+  );
+}
+
+function CopyMarkdownButton({ value }: { value: string }) {
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">(
+    "idle",
+  );
+  const label =
+    copyState === "copied"
+      ? "Copied markdown"
+      : copyState === "failed"
+        ? "Could not copy markdown"
+        : "Copy markdown";
+
+  async function copyMarkdown() {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopyState("copied");
+    } catch {
+      setCopyState("failed");
+    }
+
+    window.setTimeout(() => setCopyState("idle"), 1_200);
+  }
+
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      className={classNames(
+        "flex h-6 w-6 shrink-0 items-center justify-center rounded-sm border border-zinc-200 text-zinc-400 transition-colors hover:bg-zinc-50 hover:text-zinc-900 dark:border-zinc-800 dark:hover:bg-zinc-900 dark:hover:text-zinc-100",
+        copyState === "copied" && "text-emerald-600 dark:text-emerald-400",
+        copyState === "failed" && "text-zinc-700 dark:text-zinc-200",
+      )}
+      onClick={() => void copyMarkdown()}
+    >
+      {copyState === "copied" ? (
+        <Check className="h-3.5 w-3.5" />
+      ) : (
+        <Copy className="h-3.5 w-3.5" />
+      )}
+    </button>
   );
 }
 
@@ -2324,7 +2410,169 @@ function MarkdownAnswer({ value }: { value: string }) {
   );
 }
 
-function turnEventStream(turn: LaneTurnUiState): unknown[] {
+type EventMetric = {
+  label: string;
+  value: string;
+  title?: string;
+};
+
+function eventName(event: unknown): string {
+  if (!isRecord(event)) {
+    return "";
+  }
+
+  if (typeof event.type === "string") {
+    return event.type;
+  }
+
+  if (typeof event.phase === "string") {
+    return event.phase;
+  }
+
+  return isRecord(event.event) ? eventName(event.event) : "";
+}
+
+function eventTimestampMs(event: unknown, turnStartedAt: string): number | null {
+  if (!isRecord(event)) {
+    return null;
+  }
+
+  if (typeof event.elapsedMs === "number" && Number.isFinite(event.elapsedMs)) {
+    const startedAt = Date.parse(turnStartedAt);
+
+    return Number.isFinite(startedAt) ? startedAt + event.elapsedMs : null;
+  }
+
+  for (const key of ["timestamp", "receivedAt", "completedAt", "startedAt"]) {
+    const value = event[key];
+
+    if (typeof value === "string") {
+      const parsed = Date.parse(value);
+
+      if (Number.isFinite(parsed)) {
+        return parsed;
+      }
+    }
+  }
+
+  return isRecord(event.event)
+    ? eventTimestampMs(event.event, turnStartedAt)
+    : null;
+}
+
+function eventElapsedFromTurn(
+  event: unknown,
+  turnStartedAt: string,
+): number | null {
+  const startedAt = Date.parse(turnStartedAt);
+  const eventAt = eventTimestampMs(event, turnStartedAt);
+
+  if (!Number.isFinite(startedAt) || eventAt === null) {
+    return null;
+  }
+
+  return Math.max(0, eventAt - startedAt);
+}
+
+function isDisplayHiddenEvent(event: unknown): boolean {
+  return isRecord(event) && event.type === "tool_update";
+}
+
+function isAnswerEvent(event: unknown): boolean {
+  if (!isRecord(event)) {
+    return false;
+  }
+
+  if (
+    (event.type === "lane_message_delta" ||
+      event.type === "lane_message_snapshot") &&
+    typeof event.text === "string" &&
+    event.text.length > 0
+  ) {
+    return true;
+  }
+
+  if (event.type !== "message_update" || !isRecord(event.message)) {
+    return false;
+  }
+
+  return (
+    event.message.isThinking !== true &&
+    typeof event.message.message === "string" &&
+    event.message.message.length > 0
+  );
+}
+
+function isThinkingEvent(event: unknown): boolean {
+  if (!isRecord(event)) {
+    return false;
+  }
+
+  if (
+    event.type === "lane_reasoning_delta" &&
+    typeof event.text === "string" &&
+    event.text.length > 0
+  ) {
+    return true;
+  }
+
+  return (
+    event.type === "message_update" &&
+    isRecord(event.message) &&
+    event.message.isThinking === true
+  );
+}
+
+function firstElapsed(
+  events: unknown[],
+  turnStartedAt: string,
+  predicate: (event: unknown) => boolean,
+): number | null {
+  let value: number | null = null;
+
+  for (const event of events) {
+    if (!predicate(event)) {
+      continue;
+    }
+
+    const elapsed = eventElapsedFromTurn(event, turnStartedAt);
+
+    if (elapsed === null) {
+      continue;
+    }
+
+    value = value === null ? elapsed : Math.min(value, elapsed);
+  }
+
+  return value;
+}
+
+function elapsedLabel(value: number | null): string {
+  return value === null ? "—" : formatElapsedMs(value);
+}
+
+function thinkingSummaryValue(
+  turn: LaneTurnUiState,
+  thinkingStart: number | null,
+): string {
+  if (turn.reasoning || thinkingStart !== null) {
+    return thinkingStart === null ? "captured" : `from ${formatElapsedMs(thinkingStart)}`;
+  }
+
+  if (
+    turn.status === "queued" ||
+    turn.status === "running" ||
+    turn.status === "tool_calling"
+  ) {
+    return "pending";
+  }
+
+  const effort = turn.result?.effectiveReasoningEffort;
+
+  return effort ? `${effort} hidden` : "not exposed";
+}
+
+function turnEventSource(turn: LaneTurnUiState): unknown[] {
   const resultEvents = turn.result?.rawEvents;
 
   if (Array.isArray(resultEvents) && resultEvents.length > 0) {
@@ -2332,6 +2580,93 @@ function turnEventStream(turn: LaneTurnUiState): unknown[] {
   }
 
   return turn.rawEvents;
+}
+
+function turnEventStream(turn: LaneTurnUiState): unknown[] {
+  return turnEventSource(turn).filter((event) => !isDisplayHiddenEvent(event));
+}
+
+function turnEventSummary(
+  turn: LaneTurnUiState,
+  displayEvents: unknown[],
+): EventMetric[] {
+  const allEvents = [...turn.rawEvents, ...turnEventSource(turn)];
+  const firstEvent = firstElapsed(
+    allEvents,
+    turn.startedAt,
+    (event) =>
+      !["lane_started", "lane_telemetry", "run_started"].includes(
+        eventName(event),
+      ),
+  );
+  const firstAnswer = firstElapsed(allEvents, turn.startedAt, isAnswerEvent);
+  const firstTool =
+    turn.toolCalls
+      .map((call) => Date.parse(call.startedAt) - Date.parse(turn.startedAt))
+      .filter((value) => Number.isFinite(value) && value >= 0)
+      .sort((left, right) => left - right)[0] ?? null;
+  const toolDuration = turn.toolCalls.reduce(
+    (total, call) => total + (call.durationMs ?? 0),
+    0,
+  );
+  const thinkingStart = firstElapsed(allEvents, turn.startedAt, isThinkingEvent);
+  const thinkingValue = thinkingSummaryValue(turn, thinkingStart);
+
+  return [
+    {
+      label: "First Event",
+      value: elapsedLabel(firstEvent),
+      title: "First non-start trace event received for this lane.",
+    },
+    {
+      label: "First Tool",
+      value: elapsedLabel(firstTool),
+      title: "When the first normalized Graphlit tool call started.",
+    },
+    {
+      label: "First Answer",
+      value: elapsedLabel(firstAnswer),
+      title: "First answer text delta or snapshot received by the UI.",
+    },
+    {
+      label: "Tool Time",
+      value: turn.toolCalls.length
+        ? `${formatElapsedMs(toolDuration)} / ${turn.toolCalls.length}`
+        : "none",
+      title: "Total normalized tool duration across completed tool calls.",
+    },
+    {
+      label: "Thinking",
+      value: thinkingValue,
+      title: "Reasoning trace timing when exposed. Some providers use reasoning internally without returning a thinking stream.",
+    },
+    {
+      label: "Events",
+      value: displayEvents.length.toLocaleString(),
+      title: "Displayed event count after filtering noisy raw tool updates.",
+    },
+  ];
+}
+
+function EventSummary({ metrics }: { metrics: EventMetric[] }) {
+  return (
+    <div className="mb-2 grid grid-cols-2 gap-1.5">
+      {metrics.map((metric) => (
+        <div
+          key={metric.label}
+          title={metric.title}
+          className="rounded-sm border border-zinc-200 bg-zinc-50 px-2 py-1.5 dark:border-zinc-800 dark:bg-zinc-900/50"
+        >
+          <div className="text-[9px] font-semibold uppercase tracking-widest text-zinc-500">
+            {metric.label}
+          </div>
+          <div className="mt-0.5 font-mono text-[11px] tabular-nums text-zinc-800 dark:text-zinc-200">
+            {metric.value}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 function JsonView({ value }: { value: unknown }) {
@@ -2621,7 +2956,7 @@ function JudgePanel({
                           : lane.anonymousId}
                       </div>
                       <div className="mt-1 font-mono text-xs tabular-nums text-zinc-500">
-                        {lane.overallScore}/5
+                        {lane.overallScore}/10
                       </div>
                     </div>
                     <div>
@@ -2630,10 +2965,11 @@ function JudgePanel({
                         tone={isGraphlit ? "graphlit" : "neutral"}
                       />
                       <div className="mt-2 grid grid-cols-2 gap-2 font-mono text-xs text-zinc-500">
-                        <span>retrieval {lane.retrievalUse}/5</span>
-                        <span>inspect {lane.sourceInspection}/5</span>
-                        <span>grounded {lane.groundedness}/5</span>
-                        <span>risk {lane.unsupportedClaimRisk}/5</span>
+                        <span>retrieval {lane.retrievalUse}/10</span>
+                        <span>inspect {lane.sourceInspection}/10</span>
+                        <span>grounded {lane.groundedness}/10</span>
+                        <span>helpful {lane.answerHelpfulness}/10</span>
+                        <span>risk {lane.unsupportedClaimRisk}/10</span>
                       </div>
                     </div>
                   </div>
@@ -2661,6 +2997,11 @@ function JudgePanel({
           source details opened
           <span className="mx-2 text-zinc-300 dark:text-zinc-700">/</span>
           <span className="font-semibold text-zinc-700 dark:text-zinc-300">
+            Helpful
+          </span>{" "}
+          complete and useful answer
+          <span className="mx-2 text-zinc-300 dark:text-zinc-700">/</span>
+          <span className="font-semibold text-zinc-700 dark:text-zinc-300">
             Risk
           </span>{" "}
           unsupported-claim risk, lower is better
@@ -2678,8 +3019,8 @@ function Gauge({
   tone?: "graphlit" | "neutral";
 }) {
   return (
-    <div className="grid grid-cols-5 gap-1">
-      {Array.from({ length: 5 }).map((_, index) => (
+    <div className="grid grid-cols-10 gap-1">
+      {Array.from({ length: 10 }).map((_, index) => (
         <div
           key={index}
           className={classNames(

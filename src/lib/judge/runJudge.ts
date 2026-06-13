@@ -17,6 +17,8 @@ import type {
 import { summarizeJson } from "@/lib/utils";
 
 const ANONYMOUS_IDS = ["A", "B", "C", "D", "E", "F", "G", "H"] as const;
+const JUDGE_TOOL_OUTPUT_MAX_CHARS = 1_200;
+const JUDGE_SOURCE_SNIPPET_MAX_CHARS = 2_400;
 
 function deterministicShuffle<T>(items: T[], seed: string): T[] {
   const values = [...items];
@@ -39,9 +41,21 @@ function buildJudgePrompt(): string {
   return [
     "You are judging agent harness outputs for a developer-facing RAG lab.",
     "Use only the prompt, final answers, tool calls, and source traces in the input.",
+    "Do not use your training data, model memory, or outside facts to validate factual claims, especially for current, recent, latest, or time-sensitive topics.",
+    "If an answer contains information that conflicts with your prior knowledge but is supported by the lane's retrieved or inspected sources, treat the run evidence as authoritative for judging.",
+    "Only call a factual claim a hallucination when it is contradicted by the provided traces/sources or when the lane presents it without support from its own answer, tools, or sources.",
+    "Use tool responses and source traces primarily to judge answer fidelity: whether the final answer accurately reflects the evidence the lane actually received.",
+    "Do not penalize retrievalUse, sourceInspection, groundedness, or overallScore merely because one search provider returned shorter snippets, fewer result fields, or less verbose tool output than another provider.",
+    "Score retrievalUse based on relevant tool selection, query intent, and whether the lane used the evidence it received; do not score it by raw snippet length or result verbosity.",
+    "Score sourceInspection based on whether the lane inspected or used available source-level evidence when the answer required it; a short search snippet is not itself a source-inspection failure.",
+    "If a lane only has brief search snippets, treat those snippets as enough support only for claims they actually contain. Penalize unsupported extra claims, not the provider's snippet brevity.",
     "Do not reward verbosity by default.",
     "Penalize unsupported claims and missing source inspection.",
     "Prefer answers that visibly use retrieved Graphlit evidence.",
+    "Score retrievalUse, sourceInspection, groundedness, and answerHelpfulness as positive 0-10 dimensions where higher is better.",
+    "Score unsupportedClaimRisk as a 0-10 risk dimension where lower is better.",
+    "Set overallScore as the holistic turn score derived from the same dimensions, using answerHelpfulness as the primary tie-breaker when retrieval and groundedness are similar.",
+    "If two lanes have identical dimension scores, give them the same overallScore unless strengths, weaknesses, or pairwise notes clearly explain a meaningful difference.",
     "Lanes are anonymized for scoring. Do not infer harness identity or reward a lane because of its name.",
     "Use anonymousId values for structured ID fields only.",
     "Use the provided friendlyName values in all human-readable prose fields. Never write 'Lane A', 'Lane B', or similar anonymous labels in summary, winnerReason, strengths, weaknesses, traceEvidence, or pairwise notes.",
@@ -60,14 +74,17 @@ function compactLaneResult(result: LaneRunResult, anonymousId: string) {
     toolCalls: result.toolCalls.map((call) => ({
       name: call.name,
       arguments: call.arguments,
-      outputSummary: call.outputSummary ?? summarizeJson(call.output, 240),
+      outputSummary: summarizeJson(
+        call.output ?? call.outputSummary,
+        JUDGE_TOOL_OUTPUT_MAX_CHARS,
+      ),
       durationMs: call.durationMs,
       error: call.error,
     })),
     sources: result.sources.map((source) => ({
       resourceUri: source.resourceUri,
       name: source.name,
-      snippet: source.text?.slice(0, 800),
+      snippet: source.text?.slice(0, JUDGE_SOURCE_SNIPPET_MAX_CHARS),
       relevance: source.relevance ?? null,
     })),
     durationMs: result.durationMs,

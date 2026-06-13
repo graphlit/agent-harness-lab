@@ -1,6 +1,10 @@
 import "server-only";
 
-import { GOOGLE_MODELS } from "@/lib/constants";
+import {
+  DEFAULT_MODEL_TEMPERATURE,
+  GOOGLE_MODELS,
+  mergeAgentInstructions,
+} from "@/lib/constants";
 import { createGraphlitClient } from "@/lib/graphlit/client";
 import { LaneRunRecorder } from "@/lib/lanes/recorder";
 import { createGraphlitTools } from "@/lib/tools/createGraphlitTools";
@@ -32,6 +36,14 @@ type GoogleStructuredEvent = {
   output?: unknown;
 };
 
+type GoogleUsageTotals = {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  seen: boolean;
+  eventIds: Set<string>;
+};
+
 type GoogleAdkModule = {
   EventType: {
     THOUGHT: string;
@@ -59,6 +71,16 @@ const GOOGLE_APP_NAME = "graphlit-agent-harness-lab";
 const GOOGLE_USER_ID = "agent-harness-lab";
 let sharedGoogleSessionService: GoogleSessionService | null = null;
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : undefined;
+}
+
 function getGoogleSessionService(
   InMemorySessionService: GoogleAdkModule["InMemorySessionService"],
 ): GoogleSessionService {
@@ -79,6 +101,43 @@ function eventText(value: unknown): string {
   }
 
   return JSON.stringify(value);
+}
+
+function createGoogleUsageTotals(): GoogleUsageTotals {
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    seen: false,
+    eventIds: new Set<string>(),
+  };
+}
+
+function addGoogleUsage(totals: GoogleUsageTotals, event: unknown): void {
+  if (!isRecord(event) || !isRecord(event.usageMetadata)) {
+    return;
+  }
+
+  const eventId = typeof event.id === "string" ? event.id : undefined;
+
+  if (eventId && totals.eventIds.has(eventId)) {
+    return;
+  }
+
+  const usage = event.usageMetadata;
+  const inputTokens = finiteNumber(usage.promptTokenCount) ?? 0;
+  const outputTokens = finiteNumber(usage.candidatesTokenCount) ?? 0;
+  const totalTokens =
+    finiteNumber(usage.totalTokenCount) ?? inputTokens + outputTokens;
+
+  totals.inputTokens += inputTokens;
+  totals.outputTokens += outputTokens;
+  totals.totalTokens += totalTokens;
+  totals.seen = true;
+
+  if (eventId) {
+    totals.eventIds.add(eventId);
+  }
 }
 
 export async function runGoogleLane(
@@ -103,8 +162,13 @@ export async function runGoogleLane(
   const graphlitTools = createGraphlitTools(client).map((item) =>
     recordGraphlitToolCall(item, recorder),
   );
+  const instructions = mergeAgentInstructions(
+    context.systemPrompt,
+    context.runtimeInstructions,
+  );
 
   try {
+    recorder.recordPhase("google.sdk.import.start");
     await context.emit({
       type: "lane_trace",
       runId: context.runId,
@@ -121,6 +185,7 @@ export async function runGoogleLane(
       stringifyContent,
       toStructuredEvents,
     } = (await import("@google/adk")) as unknown as GoogleAdkModule;
+    recorder.recordPhase("google.sdk.import.complete");
     await context.emit({
       type: "lane_trace",
       runId: context.runId,
@@ -144,11 +209,11 @@ export async function runGoogleLane(
     const agent = new LlmAgent({
       name: "graphlit_knowledge_agent",
       model: GOOGLE_MODELS[context.modelSize],
-      instruction: context.systemPrompt,
+      instruction: instructions,
       tools,
       includeContents: "default",
       generateContentConfig: {
-        temperature: 0.2,
+        temperature: DEFAULT_MODEL_TEMPERATURE,
       },
     });
     const runner = new Runner({
@@ -162,15 +227,17 @@ export async function runGoogleLane(
       sessionId: googleSessionId,
     });
     recorder.mergeSession({ googleSessionId });
-    recorder.recordRaw({
-      phase: "google.runAsync.start",
+    recorder.recordPhase("google.runAsync.start", {
       model: GOOGLE_MODELS[context.modelSize],
+      sessionId: googleSessionId,
+      toolCount: tools.length,
       streaming: {
         api: "Runner.runAsync",
         cadence: "native",
       },
     });
     let finalText = "";
+    const usageTotals = createGoogleUsageTotals();
 
     for await (const event of runner.runAsync({
       userId: GOOGLE_USER_ID,
@@ -182,6 +249,7 @@ export async function runGoogleLane(
       abortSignal: context.abortSignal,
     })) {
       recorder.recordRaw(event);
+      addGoogleUsage(usageTotals, event);
 
       for (const structured of toStructuredEvents(event)) {
         if (
@@ -216,6 +284,21 @@ export async function runGoogleLane(
 
     if (!recorder.getAnswer() && finalText) {
       await recorder.emitSnapshot(finalText);
+    }
+
+    recorder.recordPhase("google.runAsync.complete", {
+      sessionId: googleSessionId,
+    });
+
+    if (usageTotals.seen) {
+      recorder.recordTokenUsage(
+        {
+          inputTokens: usageTotals.inputTokens,
+          outputTokens: usageTotals.outputTokens,
+          totalTokens: usageTotals.totalTokens,
+        },
+        "Google ADK current turn usage",
+      );
     }
 
     return recorder.result();

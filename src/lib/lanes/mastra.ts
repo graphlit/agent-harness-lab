@@ -1,6 +1,9 @@
 import "server-only";
 
-import { MODEL_PROVIDER_MODEL_IDS } from "@/lib/constants";
+import {
+  MODEL_PROVIDER_MODEL_IDS,
+  mergeAgentInstructions,
+} from "@/lib/constants";
 import { createGraphlitClient } from "@/lib/graphlit/client";
 import { LaneRunRecorder } from "@/lib/lanes/recorder";
 import { emitTextStream } from "@/lib/lanes/streaming";
@@ -95,12 +98,17 @@ export async function runMastraLane(
   const graphlitTools = createGraphlitTools(client).map((item) =>
     recordGraphlitToolCall(item, recorder),
   );
+  const instructions = mergeAgentInstructions(
+    context.systemPrompt,
+    context.runtimeInstructions,
+  );
 
   try {
     logMastraLane("memory.start", {
       runId: context.runId,
       turnId: context.turnId,
     });
+    recorder.recordPhase("mastra.memory.start");
     await context.emit({
       type: "lane_trace",
       runId: context.runId,
@@ -116,6 +124,10 @@ export async function runMastraLane(
     logMastraLane("memory.complete", {
       runId: context.runId,
       turnId: context.turnId,
+      resourceId,
+      threadId,
+    });
+    recorder.recordPhase("mastra.memory.complete", {
       resourceId,
       threadId,
     });
@@ -137,6 +149,7 @@ export async function runMastraLane(
       runId: context.runId,
       turnId: context.turnId,
     });
+    recorder.recordPhase("mastra.sdk.import.start");
     const [{ Agent }, { createTool }] = await Promise.all([
       import("@mastra/core/agent"),
       import("@mastra/core/tools"),
@@ -145,6 +158,7 @@ export async function runMastraLane(
       runId: context.runId,
       turnId: context.turnId,
     });
+    recorder.recordPhase("mastra.sdk.import.complete");
     await context.emit({
       type: "lane_trace",
       runId: context.runId,
@@ -192,7 +206,7 @@ export async function runMastraLane(
     const agent = new Agent({
       id: "graphlit-knowledge-agent",
       name: "Graphlit Knowledge Agent",
-      instructions: context.systemPrompt ?? "",
+      instructions: instructions ?? "",
       model,
       tools,
       memory,
@@ -209,6 +223,17 @@ export async function runMastraLane(
       resourceId,
       threadId,
       toolCount: Object.keys(tools).length,
+    });
+    recorder.recordPhase("mastra.stream.start", {
+      model: modelId,
+      modelProvider: context.modelProvider,
+      resourceId,
+      threadId,
+      toolCount: Object.keys(tools).length,
+      streaming: {
+        api: "Agent.stream().textStream",
+        cadence: "native",
+      },
     });
     const result = await agent.stream(context.prompt, {
       memory: {
@@ -228,6 +253,10 @@ export async function runMastraLane(
     logMastraLane("stream.complete", {
       runId: context.runId,
       turnId: context.turnId,
+      resourceId,
+      threadId,
+    });
+    recorder.recordPhase("mastra.stream.complete", {
       resourceId,
       threadId,
     });
