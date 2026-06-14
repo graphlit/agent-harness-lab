@@ -1453,20 +1453,34 @@ export function AppShell() {
           <div className="agent-harness-lanes-scroll flex min-h-0 w-full flex-1 flex-nowrap snap-x snap-mandatory overflow-x-auto overflow-y-hidden md:snap-none">
             <div className="flex h-full w-full shrink-0 snap-center flex-col items-center justify-center border-r border-transparent px-6 pb-40 last:border-r-0 md:flex-1 md:shrink md:border-zinc-200 dark:md:border-zinc-800">
               <div className="text-center">
-                <div
-                  className="mx-auto mb-6 flex h-14 w-14 items-center justify-center rounded-xl border border-blue-200 bg-blue-50/80 shadow-lg transition-colors duration-200 dark:border-blue-900/80 dark:bg-blue-950/40"
+                <a
+                  href="https://www.graphlit.com"
+                  target="_blank"
+                  rel="noreferrer"
+                  aria-label="Open Graphlit"
+                  title="Open Graphlit"
+                  className="mx-auto mb-6 flex h-14 w-14 items-center justify-center rounded-xl border border-blue-200 bg-blue-50/80 shadow-lg transition-colors duration-200 hover:border-blue-300 hover:bg-blue-50 focus:outline-none focus:ring-2 focus:ring-blue-500/30 dark:border-blue-900/80 dark:bg-blue-950/40 dark:hover:border-blue-800 dark:hover:bg-blue-950/60"
                 >
                   <BrandIcon
                     name="graphlit"
                     className="h-7 w-7"
                     alt="Graphlit"
                   />
-                </div>
+                </a>
                 <h1 className="text-2xl font-medium tracking-tight text-zinc-900 dark:text-zinc-50">
                   What do you want to compare?
                 </h1>
                 <p className="mt-2 text-base text-zinc-500">
-                  Send prompts. Watch each agent harness use the same Graphlit tools.
+                  Send prompts. Watch each agent harness use the same{" "}
+                  <a
+                    href="https://github.com/graphlit/graphlit-agent-tools"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="font-medium text-zinc-700 underline decoration-zinc-300 underline-offset-4 hover:text-zinc-950 dark:text-zinc-300 dark:decoration-zinc-700 dark:hover:text-zinc-50"
+                  >
+                    Graphlit agent tools
+                  </a>
+                  .
                 </p>
               </div>
             </div>
