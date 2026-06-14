@@ -6,6 +6,7 @@ import { JUDGE_RUBRIC_VERSION, LANE_LABELS } from "@/lib/constants";
 import { createGraphlitClient } from "@/lib/graphlit/client";
 import {
   JudgeResultSchema,
+  type ParsedJudgeResult,
   scoreAgentHarnessRunJsonSchema,
 } from "@/lib/judge/schema";
 import type {
@@ -13,10 +14,15 @@ import type {
   JudgeResult,
   LaneId,
   LaneRunResult,
+  ToolCallTrace,
 } from "@/lib/types";
-import { safeJson } from "@/lib/utils";
+import { summarizeJson } from "@/lib/utils";
 
 const ANONYMOUS_IDS = ["A", "B", "C", "D", "E", "F", "G", "H"] as const;
+const MAX_JUDGE_FINAL_ANSWER_CHARS = 100_000;
+const MAX_JUDGE_TOOL_OUTPUT_CHARS = 12_000;
+const MAX_JUDGE_SOURCE_TEXT_CHARS = 12_000;
+const MAX_JUDGE_RESULT_TEXT_CHARS = 2_000;
 
 function deterministicShuffle<T>(items: T[], seed: string): T[] {
   const values = [...items];
@@ -33,6 +39,16 @@ function deterministicShuffle<T>(items: T[], seed: string): T[] {
   }
 
   return values;
+}
+
+function anonymousIdForIndex(index: number): string {
+  const anonymousId = ANONYMOUS_IDS[index];
+
+  if (!anonymousId) {
+    throw new Error(`Judge supports at most ${ANONYMOUS_IDS.length} lanes.`);
+  }
+
+  return anonymousId;
 }
 
 function buildJudgePrompt(): string {
@@ -69,6 +85,7 @@ function buildJudgePrompt(): string {
     "If two lanes have identical dimension scores, give them the same overallScore unless strengths, weaknesses, or pairwise notes clearly explain a meaningful difference.",
     "Lanes are anonymized for scoring. Do not infer harness identity or reward a lane because of its name.",
     "Use anonymousId values for structured ID fields only.",
+    "The input includes expectedLaneCount and requiredAnonymousIds. The lanes array you return MUST contain exactly one score object for every requiredAnonymousId. Never say only one lane was provided when expectedLaneCount is greater than 1.",
     "Use the provided friendlyName values in all human-readable prose fields. Never write 'Lane A', 'Lane B', or similar anonymous labels in summary, winnerReason, strengths, weaknesses, traceEvidence, or pairwise notes.",
     "Example: write 'Graphlit is the best response...' instead of 'Lane C is the best response...'.",
     "Set biasChecks.individualScoringBeforePairwise to true only if you independently scored each lane before making winner or pairwise comparisons.",
@@ -78,30 +95,126 @@ function buildJudgePrompt(): string {
   ].join(" ");
 }
 
+function logJudgeRunner(phase: string, details?: Record<string, unknown>): void {
+  console.info(`[agent-harness-lab/judge] ${phase}`, details ?? {});
+}
+
+function clipText(value: unknown, maxLength: number): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  return value.length <= maxLength
+    ? value
+    : `${value.slice(0, maxLength)}\n...[truncated ${value.length - maxLength} chars]`;
+}
+
+function compactSearchLikeOutput(output: unknown): unknown {
+  if (!output || typeof output !== "object" || Array.isArray(output)) {
+    return undefined;
+  }
+
+  const value = output as {
+    query?: unknown;
+    searchService?: unknown;
+    results?: unknown;
+  };
+
+  if (!Array.isArray(value.results)) {
+    return undefined;
+  }
+
+  return {
+    query: typeof value.query === "string" ? value.query : undefined,
+    searchService:
+      typeof value.searchService === "string" ? value.searchService : undefined,
+    results: value.results.slice(0, 10).map((item) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) {
+        return item;
+      }
+
+      const result = item as Record<string, unknown>;
+
+      return {
+        title: result.title,
+        uri: result.uri,
+        text: clipText(result.text, MAX_JUDGE_RESULT_TEXT_CHARS),
+        score: result.score ?? null,
+      };
+    }),
+  };
+}
+
+function compactToolOutput(call: ToolCallTrace): unknown {
+  if (call.output === undefined) {
+    return call.outputSummary;
+  }
+
+  const searchLike = compactSearchLikeOutput(call.output);
+
+  if (searchLike) {
+    return searchLike;
+  }
+
+  return summarizeJson(call.output, MAX_JUDGE_TOOL_OUTPUT_CHARS);
+}
+
 function compactLaneResult(result: LaneRunResult, anonymousId: string) {
   const friendlyName = LANE_LABELS[result.laneId];
 
   return {
     anonymousId,
     friendlyName,
-    finalAnswer: result.finalAnswer,
+    finalAnswer: clipText(result.finalAnswer, MAX_JUDGE_FINAL_ANSWER_CHARS),
     toolCalls: result.toolCalls.map((call) => ({
       name: call.name,
       arguments: call.arguments,
-      output:
-        call.output === undefined ? call.outputSummary : safeJson(call.output),
+      output: compactToolOutput(call),
       durationMs: call.durationMs,
       error: call.error,
     })),
     sources: result.sources.map((source) => ({
       resourceUri: source.resourceUri,
       name: source.name,
-      text: source.text,
+      text: clipText(source.text, MAX_JUDGE_SOURCE_TEXT_CHARS),
       relevance: source.relevance ?? null,
       inspected: source.inspected ?? false,
     })),
     durationMs: result.durationMs,
   };
+}
+
+function validateJudgeCoverage(
+  parsed: ParsedJudgeResult,
+  ordered: LaneRunResult[],
+  anonymousToLane: Map<string, LaneId>,
+): void {
+  const expected = new Set(
+    ordered.map((_result, index) => anonymousIdForIndex(index)),
+  );
+  const actual = new Set(parsed.lanes.map((lane) => lane.anonymousId));
+  const missing = [...expected].filter((anonymousId) => !actual.has(anonymousId));
+  const extra = [...actual].filter((anonymousId) => !expected.has(anonymousId));
+
+  if (missing.length > 0 || extra.length > 0 || actual.size !== expected.size) {
+    const missingNames = missing
+      .map((anonymousId) => anonymousToLane.get(anonymousId))
+      .filter((laneId): laneId is LaneId => Boolean(laneId))
+      .map((laneId) => LANE_LABELS[laneId]);
+
+    throw new Error(
+      [
+        "Judge returned incomplete lane coverage.",
+        missingNames.length
+          ? `Missing completed lanes: ${missingNames.join(", ")}.`
+          : undefined,
+        extra.length ? `Unexpected anonymous IDs: ${extra.join(", ")}.` : undefined,
+        `Expected ${expected.size} scored lanes, received ${parsed.lanes.length}.`,
+      ]
+        .filter(Boolean)
+        .join(" "),
+    );
+  }
 }
 
 function formatFriendlyList(names: string[]): string {
@@ -162,7 +275,7 @@ export async function runJudge(options: {
   const laneToAnonymous = new Map<LaneId, string>();
 
   ordered.forEach((result, index) => {
-    const anonymousId = ANONYMOUS_IDS[index];
+    const anonymousId = anonymousIdForIndex(index);
     anonymousToLane.set(anonymousId, result.laneId);
     laneToAnonymous.set(result.laneId, anonymousId);
   });
@@ -170,12 +283,16 @@ export async function runJudge(options: {
   const judgeInput = {
     prompt: options.prompt,
     rubricVersion: JUDGE_RUBRIC_VERSION,
+    expectedLaneCount: ordered.length,
+    requiredAnonymousIds: ordered.map((_result, index) =>
+      anonymousIdForIndex(index),
+    ),
     laneNameMap: ordered.map((result, index) => ({
-      anonymousId: ANONYMOUS_IDS[index],
+      anonymousId: anonymousIdForIndex(index),
       friendlyName: LANE_LABELS[result.laneId],
     })),
     lanes: ordered.map((result, index) =>
-      compactLaneResult(result, ANONYMOUS_IDS[index]),
+      compactLaneResult(result, anonymousIdForIndex(index)),
     ),
     failedLanes: options.failed.map((failure) => ({
       anonymousId: laneToAnonymous.get(failure.laneId) ?? null,
@@ -183,10 +300,26 @@ export async function runJudge(options: {
       error: failure.error,
     })),
   };
+  const judgeInputJson = JSON.stringify(judgeInput);
+
+  logJudgeRunner("input.prepared", {
+    runId: options.runId,
+    expectedLaneCount: ordered.length,
+    inputChars: judgeInputJson.length,
+    lanes: ordered.map((result, index) => ({
+      anonymousId: anonymousIdForIndex(index),
+      laneId: result.laneId,
+      friendlyName: LANE_LABELS[result.laneId],
+      answerChars: result.finalAnswer.length,
+      toolCalls: result.toolCalls.length,
+      sources: result.sources.length,
+    })),
+  });
+
   const client = createGraphlitClient();
   const response = await client.extractText(
     buildJudgePrompt(),
-    JSON.stringify(judgeInput),
+    judgeInputJson,
     [
       {
         name: "score_agent_harness_run",
@@ -207,6 +340,15 @@ export async function runJudge(options: {
   }
 
   const parsed = JudgeResultSchema.parse(JSON.parse(value));
+
+  validateJudgeCoverage(parsed, ordered, anonymousToLane);
+
+  logJudgeRunner("result.parsed", {
+    runId: options.runId,
+    scoredLaneCount: parsed.lanes.length,
+    scoredAnonymousIds: parsed.lanes.map((lane) => lane.anonymousId),
+    winnerAnonymousId: parsed.winnerAnonymousId,
+  });
 
   return {
     ...parsed,

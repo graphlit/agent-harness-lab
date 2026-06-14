@@ -1,6 +1,7 @@
 import "server-only";
 
 import {
+  ANALYZE_PROMPT_TOOL_NAME,
   DEFAULT_MODEL_TEMPERATURE,
   GOOGLE_MODELS,
   mergeAgentInstructions,
@@ -8,7 +9,7 @@ import {
 import { createGraphlitClient } from "@/lib/graphlit/client";
 import { LaneRunRecorder } from "@/lib/lanes/recorder";
 import { createGraphlitTools } from "@/lib/tools/createGraphlitTools";
-import { recordGraphlitToolCall } from "@/lib/tools/recordTool";
+import { recordGraphlitToolsWithRequiredFirst } from "@/lib/tools/recordTool";
 import type { LaneRunContext, LaneRunResult } from "@/lib/types";
 import { errorMessage } from "@/lib/utils";
 
@@ -190,8 +191,10 @@ export async function runGoogleLane(
   });
   recorder.setSession(context.laneSession ?? {});
   const client = createGraphlitClient();
-  const graphlitTools = createGraphlitTools(client).map((item) =>
-    recordGraphlitToolCall(item, recorder),
+  const graphlitTools = recordGraphlitToolsWithRequiredFirst(
+    createGraphlitTools(client),
+    recorder,
+    ANALYZE_PROMPT_TOOL_NAME,
   );
   const instructions = mergeAgentInstructions(
     context.systemPrompt,
@@ -253,7 +256,7 @@ export async function runGoogleLane(
 
       request.config = requireGoogleFunctionCallConfig(
         request.config,
-        graphlitTools.map((item) => item.tool.name),
+        [ANALYZE_PROMPT_TOOL_NAME],
       );
 
       return undefined;
@@ -284,7 +287,7 @@ export async function runGoogleLane(
       model: GOOGLE_MODELS[context.modelSize],
       sessionId: googleSessionId,
       toolCount: tools.length,
-      toolChoice: "required_first",
+      toolChoice: "analyze_prompt_first",
       streaming: {
         api: "Runner.runAsync",
         cadence: "native",

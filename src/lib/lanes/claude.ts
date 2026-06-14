@@ -2,16 +2,22 @@ import "server-only";
 
 import type {
   AnyZodRawShape,
+  CanUseTool,
   SdkMcpToolDefinition,
 } from "@anthropic-ai/claude-agent-sdk";
 
-import { CLAUDE_MODELS, mergeAgentInstructions } from "@/lib/constants";
+import {
+  AGENT_MAX_STEPS,
+  ANALYZE_PROMPT_TOOL_NAME,
+  CLAUDE_MODELS,
+  mergeAgentInstructions,
+} from "@/lib/constants";
 import { createGraphlitClient } from "@/lib/graphlit/client";
 import { LaneRunRecorder } from "@/lib/lanes/recorder";
 import type { LaneRunContext, LaneRunResult } from "@/lib/types";
 import { errorMessage } from "@/lib/utils";
 import { createGraphlitTools } from "@/lib/tools/createGraphlitTools";
-import { recordGraphlitToolCall } from "@/lib/tools/recordTool";
+import { recordGraphlitToolsWithRequiredFirst } from "@/lib/tools/recordTool";
 import { getZodRawShape } from "@/lib/tools/types";
 
 function extractClaudeText(message: unknown): string {
@@ -140,8 +146,10 @@ export async function runClaudeLane(
   });
   recorder.setSession(context.laneSession ?? {});
   const client = createGraphlitClient();
-  const graphlitTools = createGraphlitTools(client).map((item) =>
-    recordGraphlitToolCall(item, recorder),
+  const graphlitTools = recordGraphlitToolsWithRequiredFirst(
+    createGraphlitTools(client),
+    recorder,
+    ANALYZE_PROMPT_TOOL_NAME,
   );
   const instructions = mergeAgentInstructions(
     context.systemPrompt,
@@ -197,10 +205,34 @@ export async function runClaudeLane(
     const allowedTools = graphlitTools.map(
       (item) => `mcp__graphlit__${item.tool.name}`,
     );
+    const analyzePromptMcpToolName = `mcp__graphlit__${ANALYZE_PROMPT_TOOL_NAME}`;
+    let firstGraphlitToolSeen = false;
+    const canUseGraphlitTool: CanUseTool = async (
+      toolName,
+      _input,
+      options,
+    ) => {
+      if (toolName.startsWith("mcp__graphlit__") && !firstGraphlitToolSeen) {
+        if (toolName !== analyzePromptMcpToolName) {
+          return {
+            behavior: "deny",
+            message: `The first Graphlit tool call for this turn must be ${analyzePromptMcpToolName}.`,
+            toolUseID: options.toolUseID,
+          };
+        }
+
+        firstGraphlitToolSeen = true;
+      }
+
+      return {
+        behavior: "allow",
+        toolUseID: options.toolUseID,
+      };
+    };
     const claudeInstructions = mergeAgentInstructions(
       instructions,
       allowedTools.length > 0
-        ? "Harness parity requirement: at the start of each new user request, call one relevant Graphlit MCP tool before producing the final answer. After that first tool call, continue with more tool calls only when they materially improve the answer."
+        ? `Harness parity requirement: at the start of each new user request, call ${analyzePromptMcpToolName} before any other Graphlit MCP tool or final answer. After that first tool call, continue with more tool calls only when they materially improve the answer.`
         : undefined,
     );
     const requestedSessionId =
@@ -212,7 +244,7 @@ export async function runClaudeLane(
       model: CLAUDE_MODELS[context.modelSize],
       sessionId: requestedSessionId,
       toolCount: claudeTools.length,
-      toolChoice: "prompt_required_first",
+      toolChoice: "analyze_prompt_first",
       streaming: {
         api: "query(includePartialMessages: true)",
         cadence: "partial",
@@ -231,7 +263,7 @@ export async function runClaudeLane(
             tools: allowedTools,
             model: CLAUDE_MODELS[context.modelSize],
             effort: context.reasoningEffort,
-            maxTurns: 8,
+            maxTurns: AGENT_MAX_STEPS,
             permissionMode: "dontAsk",
           },
         },
@@ -239,7 +271,8 @@ export async function runClaudeLane(
         mcpServers: { graphlit: graphlitServer },
         tools: [],
         allowedTools,
-        maxTurns: 8,
+        canUseTool: canUseGraphlitTool,
+        maxTurns: AGENT_MAX_STEPS,
         permissionMode: "dontAsk",
         effort: context.reasoningEffort,
         includePartialMessages: true,

@@ -1,13 +1,19 @@
 import "server-only";
 
-import { OPENAI_MODELS, mergeAgentInstructions } from "@/lib/constants";
+import {
+  AGENT_MAX_STEPS,
+  ANALYZE_PROMPT_TOOL_NAME,
+  OPENAI_MODELS,
+  mergeAgentInstructions,
+} from "@/lib/constants";
 import { createGraphlitClient } from "@/lib/graphlit/client";
 import { LaneRunRecorder } from "@/lib/lanes/recorder";
 import { emitTextStream } from "@/lib/lanes/streaming";
 import type { LaneRunContext, LaneRunResult } from "@/lib/types";
 import { errorMessage, safeJson } from "@/lib/utils";
 import { createGraphlitTools } from "@/lib/tools/createGraphlitTools";
-import { recordGraphlitToolCall } from "@/lib/tools/recordTool";
+import { toNonStrictJsonSchema } from "@/lib/tools/jsonSchema";
+import { recordGraphlitToolsWithRequiredFirst } from "@/lib/tools/recordTool";
 import type { AgentInputItem } from "@openai/agents";
 
 function logOpenAiLane(
@@ -24,6 +30,19 @@ function finalOutputText(result: unknown): string {
   }
 
   return typeof result === "string" ? result : JSON.stringify(result ?? "");
+}
+
+function parseToolArguments(inputSchema: unknown, args: unknown): unknown {
+  if (
+    inputSchema &&
+    typeof inputSchema === "object" &&
+    "parse" in inputSchema &&
+    typeof inputSchema.parse === "function"
+  ) {
+    return inputSchema.parse(args);
+  }
+
+  return args;
 }
 
 export async function runOpenAiAgentsLane(
@@ -45,8 +64,10 @@ export async function runOpenAiAgentsLane(
   });
   recorder.setSession(context.laneSession ?? {});
   const client = createGraphlitClient();
-  const tools = createGraphlitTools(client).map((item) =>
-    recordGraphlitToolCall(item, recorder),
+  const tools = recordGraphlitToolsWithRequiredFirst(
+    createGraphlitTools(client),
+    recorder,
+    ANALYZE_PROMPT_TOOL_NAME,
   );
   const instructions = mergeAgentInstructions(
     context.systemPrompt,
@@ -86,22 +107,31 @@ export async function runOpenAiAgentsLane(
       initialItems: (context.laneSession?.openAiItems ??
         []) as unknown as AgentInputItem[],
     });
-    const openaiTools = tools.map((item) =>
-      tool({
+    const openaiTools = tools.map((item) => {
+      const isAnalyzePromptTool = item.tool.name === ANALYZE_PROMPT_TOOL_NAME;
+
+      return tool({
         name: item.tool.name,
         description: item.tool.description ?? `Run ${item.tool.name}.`,
-        parameters: item.inputSchema as never,
+        parameters: (isAnalyzePromptTool
+          ? toNonStrictJsonSchema(item.inputSchema)
+          : item.inputSchema) as never,
+        ...(isAnalyzePromptTool ? { strict: false as const } : {}),
         execute: async (args: unknown) =>
-          item.handler(args, undefined, context.abortSignal),
-      }),
-    );
+          item.handler(
+            parseToolArguments(item.inputSchema, args),
+            undefined,
+            context.abortSignal,
+          ),
+      } as never);
+    });
     const agent = new Agent({
       name: "Graphlit Knowledge Agent",
       model: OPENAI_MODELS[context.modelSize],
       instructions,
       tools: openaiTools,
       modelSettings: {
-        toolChoice: "required",
+        toolChoice: ANALYZE_PROMPT_TOOL_NAME,
         reasoning: {
           effort: context.reasoningEffort,
         },
@@ -118,7 +148,7 @@ export async function runOpenAiAgentsLane(
     recorder.recordPhase("openai.run.start", {
       model: OPENAI_MODELS[context.modelSize],
       toolCount: openaiTools.length,
-      toolChoice: "required_first",
+      toolChoice: "analyze_prompt_first",
       sessionId: openAiSessionId,
       streaming: {
         api: "run(stream: true).toTextStream()",
@@ -127,7 +157,7 @@ export async function runOpenAiAgentsLane(
     });
     const result = await run(agent, context.prompt, {
       session,
-      maxTurns: 8,
+      maxTurns: AGENT_MAX_STEPS,
       signal: context.abortSignal,
       stream: true,
     });

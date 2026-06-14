@@ -1,6 +1,8 @@
 import "server-only";
 
 import {
+  AGENT_MAX_STEPS,
+  ANALYZE_PROMPT_TOOL_NAME,
   MODEL_PROVIDER_MODEL_IDS,
   mergeAgentInstructions,
 } from "@/lib/constants";
@@ -15,7 +17,7 @@ import type {
   LaneSessionState,
 } from "@/lib/types";
 import { createGraphlitTools } from "@/lib/tools/createGraphlitTools";
-import { recordGraphlitToolCall } from "@/lib/tools/recordTool";
+import { recordGraphlitToolsWithRequiredFirst } from "@/lib/tools/recordTool";
 import { errorMessage, safeJson } from "@/lib/utils";
 import type { ModelMessage, ToolSet } from "ai";
 
@@ -53,8 +55,10 @@ export async function runVercelAiLane(
   });
   recorder.setSession(context.laneSession ?? {});
   const client = createGraphlitClient();
-  const graphlitTools = createGraphlitTools(client).map((item) =>
-    recordGraphlitToolCall(item, recorder),
+  const graphlitTools = recordGraphlitToolsWithRequiredFirst(
+    createGraphlitTools(client),
+    recorder,
+    ANALYZE_PROMPT_TOOL_NAME,
   );
   const instructions = mergeAgentInstructions(
     context.systemPrompt,
@@ -145,9 +149,15 @@ export async function runVercelAiLane(
       instructions,
       tools,
       prepareStep: ({ stepNumber }) => ({
-        toolChoice: stepNumber === 0 ? "required" : "auto",
+        toolChoice:
+          stepNumber === 0
+            ? {
+                type: "tool" as const,
+                toolName: ANALYZE_PROMPT_TOOL_NAME,
+              }
+            : "auto",
       }),
-      stopWhen: stepCountIs(8),
+      stopWhen: stepCountIs(AGENT_MAX_STEPS),
       providerOptions:
         context.modelProvider === "openai"
           ? {
@@ -169,7 +179,7 @@ export async function runVercelAiLane(
       model: modelId,
       modelProvider: context.modelProvider,
       toolCount: Object.keys(tools).length,
-      toolChoice: "required_first",
+      toolChoice: "analyze_prompt_first",
       streaming: {
         api: "ToolLoopAgent.stream",
         cadence: "sentence",

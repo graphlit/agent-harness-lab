@@ -1,5 +1,6 @@
 import type { Graphlit } from "graphlit-client";
 import {
+  createAnalyzePromptTool,
   createCountContentsTool,
   createInspectContentTool,
   createListResourcesTool,
@@ -21,6 +22,7 @@ const READ_ONLY_RESOURCE_KINDS: ResourceKind[] = [
 
 export function createGraphlitTools(client: Graphlit): LabGraphlitTool[] {
   return [
+    toLabGraphlitTool(createAnalyzePromptTool()),
     toLabGraphlitTool(createRetrieveContentsTool(client, {
       defaultLimit: 8,
       maxLimit: 25,

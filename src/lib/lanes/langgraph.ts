@@ -1,6 +1,8 @@
 import "server-only";
 
 import {
+  AGENT_MAX_STEPS,
+  ANALYZE_PROMPT_TOOL_NAME,
   MODEL_PROVIDER_MODEL_IDS,
   mergeAgentInstructions,
 } from "@/lib/constants";
@@ -15,7 +17,7 @@ import type {
   LaneSessionState,
 } from "@/lib/types";
 import { createGraphlitTools } from "@/lib/tools/createGraphlitTools";
-import { recordGraphlitToolCall } from "@/lib/tools/recordTool";
+import { recordGraphlitToolsWithRequiredFirst } from "@/lib/tools/recordTool";
 import { errorMessage, safeJson } from "@/lib/utils";
 import type { BaseMessage, StoredMessage } from "@langchain/core/messages";
 
@@ -189,8 +191,10 @@ export async function runLangGraphLane(
   });
   recorder.setSession(context.laneSession ?? {});
   const client = createGraphlitClient();
-  const graphlitTools = createGraphlitTools(client).map((item) =>
-    recordGraphlitToolCall(item, recorder),
+  const graphlitTools = recordGraphlitToolsWithRequiredFirst(
+    createGraphlitTools(client),
+    recorder,
+    ANALYZE_PROMPT_TOOL_NAME,
   );
   const instructions = mergeAgentInstructions(
     context.systemPrompt,
@@ -298,6 +302,7 @@ export async function runLangGraphLane(
       });
     })();
     let modelCallCount = 0;
+    let toolCallCount = 0;
     const requiredFirstToolMiddleware = createMiddleware({
       name: "RequiredFirstGraphlitToolCall",
       wrapModelCall: async (request, handler) => {
@@ -313,9 +318,24 @@ export async function runLangGraphLane(
           ...request,
           toolChoice: requiredFirstLangGraphToolChoice(
             context.modelProvider,
-            graphlitTools.map((item) => item.tool.name),
+            [ANALYZE_PROMPT_TOOL_NAME],
           ) as never,
         });
+      },
+      wrapToolCall: async (request, handler) => {
+        if (toolCallCount === 0) {
+          const toolName = request.toolCall.name;
+
+          if (toolName !== ANALYZE_PROMPT_TOOL_NAME) {
+            throw new Error(
+              `First LangGraph tool call must be ${ANALYZE_PROMPT_TOOL_NAME}; got ${toolName}.`,
+            );
+          }
+        }
+
+        toolCallCount += 1;
+
+        return handler(request);
       },
     });
     const agent = createAgent({
@@ -340,7 +360,7 @@ export async function runLangGraphLane(
       modelProvider: context.modelProvider,
       threadId,
       toolCount: langGraphTools.length,
-      toolChoice: "required_first",
+      toolChoice: "analyze_prompt_first",
       streaming: {
         api: "createAgent().streamEvents().messages[].text",
         cadence: "native",
@@ -351,7 +371,7 @@ export async function runLangGraphLane(
       {
         version: "v3",
         configurable: { thread_id: threadId },
-        recursionLimit: 16,
+        recursionLimit: AGENT_MAX_STEPS * 2,
         signal: context.abortSignal,
       },
     );

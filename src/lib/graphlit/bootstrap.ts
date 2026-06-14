@@ -8,6 +8,7 @@ import path from "node:path";
 import { Types } from "graphlit-client";
 
 import {
+  AGENT_MAX_STEPS,
   AGENT_HARNESS_LAB_BOOTSTRAP_VERSION,
   DEFAULT_LANES,
   DEFAULT_MODEL_TEMPERATURE,
@@ -280,7 +281,7 @@ function buildGraphlitSpecification(
       enableSummarization: false,
       enableEntityExtraction: false,
       enableFactExtraction: false,
-      toolRoundLimit: 8,
+      toolRoundLimit: AGENT_MAX_STEPS,
       toolResultTokenLimit: 6_000,
     },
   };

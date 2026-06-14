@@ -26,6 +26,18 @@ function logJudge(phase: string, details?: Record<string, unknown>): void {
   console.info(`[agent-harness-lab/api/judge] ${phase}`, details ?? {});
 }
 
+function summarizeJudgeInput(results: LaneRunResult[]) {
+  return results.map((result) => ({
+    laneId: result.laneId,
+    answerChars: result.finalAnswer.length,
+    toolCalls: result.toolCalls.length,
+    sources: result.sources.length,
+    rawEvents: result.rawEvents.length,
+    durationMs: result.durationMs,
+    tokenUsage: result.tokenUsage?.totalTokens,
+  }));
+}
+
 export async function POST(request: NextRequest) {
   const body = await request.json();
   const parsed = JudgeRequestSchema.safeParse(body);
@@ -44,8 +56,12 @@ export async function POST(request: NextRequest) {
     logJudge("request.received", {
       runId,
       turnId,
+      bodyChars: JSON.stringify(body).length,
       completed: results.map((result) => result.laneId),
+      completedCount: results.length,
+      lanes: summarizeJudgeInput(results),
       failed,
+      failedCount: failed.length,
     });
 
     logJudge("bootstrap.import.start", { runId, turnId });
@@ -83,7 +99,17 @@ export async function POST(request: NextRequest) {
       specification: bootstrap.specifications.judge,
     });
 
-    logJudge("request.completed", { runId, turnId });
+    logJudge("request.completed", {
+      runId,
+      turnId,
+      winnerLaneId: result.winnerLaneId,
+      scoredLaneCount: result.lanes.length,
+      scoredLanes: result.lanes.map((lane) => ({
+        anonymousId: lane.anonymousId,
+        laneId: lane.laneId,
+        overallScore: lane.overallScore,
+      })),
+    });
 
     return Response.json({ result });
   } catch (error) {

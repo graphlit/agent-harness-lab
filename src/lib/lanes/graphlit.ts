@@ -5,7 +5,11 @@ import { GoogleGenAI } from "@google/genai";
 import OpenAI from "openai";
 import type { AgentStreamEvent } from "graphlit-client";
 
-import { mergeAgentInstructions } from "@/lib/constants";
+import {
+  AGENT_MAX_STEPS,
+  ANALYZE_PROMPT_TOOL_NAME,
+  mergeAgentInstructions,
+} from "@/lib/constants";
 import { createGraphlitClient } from "@/lib/graphlit/client";
 import { LaneRunRecorder } from "@/lib/lanes/recorder";
 import { requireModelProviderApiKey } from "@/lib/model-provider-keys";
@@ -13,7 +17,7 @@ import type { LaneRunContext, LaneRunResult } from "@/lib/types";
 import { errorMessage } from "@/lib/utils";
 import { createGraphlitTools } from "@/lib/tools/createGraphlitTools";
 import {
-  recordGraphlitToolCall,
+  recordGraphlitToolsWithRequiredFirst,
   toStreamAgentToolHandlers,
 } from "@/lib/tools/recordTool";
 
@@ -101,8 +105,10 @@ export async function runGraphlitLane(
     );
   }
 
-  const tools = createGraphlitTools(client).map((tool) =>
-    recordGraphlitToolCall(tool, recorder),
+  const tools = recordGraphlitToolsWithRequiredFirst(
+    createGraphlitTools(client),
+    recorder,
+    ANALYZE_PROMPT_TOOL_NAME,
   );
   const toolHandlers = toStreamAgentToolHandlers(tools);
   const instructions = mergeAgentInstructions(
@@ -195,7 +201,7 @@ export async function runGraphlitLane(
       {
         chunkingStrategy: "sentence",
         useResponsesApi: true,
-        maxToolRounds: 8,
+        maxToolRounds: AGENT_MAX_STEPS,
         abortSignal: context.abortSignal,
       },
       undefined,

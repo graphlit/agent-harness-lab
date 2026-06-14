@@ -65,6 +65,8 @@ export const scoreAgentHarnessRunJsonSchema = {
     },
     lanes: {
       type: "array",
+      description:
+        "One score object for every requiredAnonymousIds entry in the input. Do not omit completed lanes.",
       items: {
         type: "object",
         properties: {

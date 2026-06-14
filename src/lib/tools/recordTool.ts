@@ -28,6 +28,38 @@ export function recordGraphlitToolCall(
   };
 }
 
+export function recordGraphlitToolsWithRequiredFirst(
+  graphlitTools: LabGraphlitTool[],
+  recorder: LaneRunRecorder,
+  requiredFirstToolName: string,
+): LabGraphlitTool[] {
+  let toolCallCount = 0;
+
+  return graphlitTools.map((graphlitTool) =>
+    recordGraphlitToolCall(
+      {
+        ...graphlitTool,
+        handler: async (args, artifacts, abortSignal) => {
+          if (toolCallCount === 0) {
+            const toolName = graphlitTool.tool.name;
+
+            if (toolName !== requiredFirstToolName) {
+              throw new Error(
+                `First Graphlit tool call must be ${requiredFirstToolName}; got ${toolName}.`,
+              );
+            }
+          }
+
+          toolCallCount += 1;
+
+          return graphlitTool.handler(args, artifacts, abortSignal);
+        },
+      },
+      recorder,
+    ),
+  );
+}
+
 export function toStreamAgentToolHandlers(
   tools: LabGraphlitTool[],
 ): StreamAgentToolHandlers {

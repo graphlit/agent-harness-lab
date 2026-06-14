@@ -1,6 +1,8 @@
 import "server-only";
 
 import {
+  AGENT_MAX_STEPS,
+  ANALYZE_PROMPT_TOOL_NAME,
   MODEL_PROVIDER_MODEL_IDS,
   mergeAgentInstructions,
 } from "@/lib/constants";
@@ -11,7 +13,7 @@ import { requireModelProviderApiKey } from "@/lib/model-provider-keys";
 import type { LaneRunContext, LaneRunResult } from "@/lib/types";
 import { errorMessage, safeJson } from "@/lib/utils";
 import { createGraphlitTools } from "@/lib/tools/createGraphlitTools";
-import { recordGraphlitToolCall } from "@/lib/tools/recordTool";
+import { recordGraphlitToolsWithRequiredFirst } from "@/lib/tools/recordTool";
 import type { Memory as MastraMemory } from "@mastra/memory";
 
 let sharedMastraMemory: MastraMemory | null = null;
@@ -95,8 +97,10 @@ export async function runMastraLane(
   });
   recorder.setSession(context.laneSession ?? {});
   const client = createGraphlitClient();
-  const graphlitTools = createGraphlitTools(client).map((item) =>
-    recordGraphlitToolCall(item, recorder),
+  const graphlitTools = recordGraphlitToolsWithRequiredFirst(
+    createGraphlitTools(client),
+    recorder,
+    ANALYZE_PROMPT_TOOL_NAME,
   );
   const instructions = mergeAgentInstructions(
     context.systemPrompt,
@@ -230,7 +234,7 @@ export async function runMastraLane(
       resourceId,
       threadId,
       toolCount: Object.keys(tools).length,
-      toolChoice: "required_first",
+      toolChoice: "analyze_prompt_first",
       streaming: {
         api: "Agent.stream().textStream",
         cadence: "native",
@@ -242,9 +246,15 @@ export async function runMastraLane(
         thread: threadId,
       },
       runId: context.runId,
-      maxSteps: 8,
+      maxSteps: AGENT_MAX_STEPS,
       prepareStep: ({ stepNumber }) => ({
-        toolChoice: stepNumber === 0 ? "required" : "auto",
+        toolChoice:
+          stepNumber === 0
+            ? {
+                type: "tool" as const,
+                toolName: ANALYZE_PROMPT_TOOL_NAME,
+              }
+            : "auto",
       }),
       abortSignal: context.abortSignal,
     });

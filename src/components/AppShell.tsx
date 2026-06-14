@@ -545,6 +545,31 @@ const answerMarkdownComponents: Components = {
       {children}
     </blockquote>
   ),
+  table: ({ children }) => (
+    <div className="my-3 max-w-full overflow-x-auto rounded-sm border border-zinc-200 dark:border-zinc-800">
+      <table className="min-w-[540px] border-collapse text-left text-[11px] leading-4 text-zinc-800 dark:text-zinc-200">
+        {children}
+      </table>
+    </div>
+  ),
+  thead: ({ children }) => (
+    <thead className="bg-zinc-50 text-zinc-600 dark:bg-zinc-900 dark:text-zinc-300">
+      {children}
+    </thead>
+  ),
+  th: ({ children }) => (
+    <th className="border-b border-r border-zinc-200 px-2 py-1.5 align-top text-[10px] font-semibold uppercase tracking-wider last:border-r-0 dark:border-zinc-800">
+      {children}
+    </th>
+  ),
+  td: ({ children }) => (
+    <td className="border-b border-r border-zinc-200 px-2 py-1.5 align-top last:border-r-0 dark:border-zinc-800">
+      {children}
+    </td>
+  ),
+  tr: ({ children }) => (
+    <tr className="last:[&>td]:border-b-0">{children}</tr>
+  ),
   strong: ({ children }) => (
     <strong className="font-semibold text-zinc-950 dark:text-zinc-50">
       {children}
@@ -1429,7 +1454,7 @@ export function AppShell() {
         className="relative flex min-h-0 w-full flex-1 flex-col overflow-hidden bg-zinc-50 transition-colors duration-200 dark:bg-[#09090b]"
       >
         {!hasLaneContent ? (
-          <div className="agent-harness-lanes-scroll flex min-h-0 w-full flex-1 flex-nowrap snap-x snap-mandatory overflow-x-auto md:snap-none">
+          <div className="agent-harness-lanes-scroll flex min-h-0 w-full flex-1 flex-nowrap snap-x snap-mandatory overflow-x-auto overflow-y-hidden md:snap-none">
             <div className="flex h-full w-full shrink-0 snap-center flex-col items-center justify-center border-r border-transparent px-6 pb-40 last:border-r-0 md:flex-1 md:shrink md:border-zinc-200 dark:md:border-zinc-800">
               <div className="text-center">
                 <div
@@ -1452,7 +1477,7 @@ export function AppShell() {
           </div>
         ) : (
           <>
-            <div className="agent-harness-lanes-scroll flex min-h-0 w-full flex-1 flex-nowrap snap-x snap-mandatory overflow-x-auto md:snap-none">
+            <div className="agent-harness-lanes-scroll flex min-h-0 w-full flex-1 flex-nowrap snap-x snap-mandatory overflow-x-auto overflow-y-hidden md:snap-none">
               {visibleLaneList.map((lane) => (
                 <LanePanel
                   key={lane.id}
@@ -2249,7 +2274,7 @@ function LanePanel({
           </div>
         ) : null}
       </header>
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="min-h-0 flex-1 scroll-pb-8 overflow-y-auto overscroll-contain pb-8">
         {hasTranscript ? (
           lane.turns.map((turn, index) => (
             <LaneTurn
@@ -2430,7 +2455,7 @@ function CopyMarkdownButton({ value }: { value: string }) {
 
 function MarkdownAnswer({ value }: { value: string }) {
   return (
-    <div className="max-w-none break-words">
+    <div className="max-w-none break-words text-[13px] leading-5 text-zinc-900 dark:text-zinc-100">
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkBreaks]}
         components={answerMarkdownComponents}
@@ -2507,7 +2532,16 @@ function eventElapsedFromTurn(
 }
 
 function isDisplayHiddenEvent(event: unknown): boolean {
-  return isRecord(event) && event.type === "tool_update";
+  if (!isRecord(event)) {
+    return false;
+  }
+
+  return (
+    event.type === "tool_update" ||
+    event.type === "message_update" ||
+    event.type === "lane_message_delta" ||
+    event.type === "lane_message_snapshot"
+  );
 }
 
 function isAnswerEvent(event: unknown): boolean {
@@ -2675,7 +2709,8 @@ function turnEventSummary(
     {
       label: "Events",
       value: displayEvents.length.toLocaleString(),
-      title: "Displayed event count after filtering noisy raw tool updates.",
+      title:
+        "Displayed event count after filtering noisy raw tool updates and streaming message snapshots.",
     },
   ];
 }
@@ -2780,12 +2815,48 @@ function EventStreamDetails({ events }: { events: unknown[] }) {
         </button>
       </div>
       {isOpen ? (
-        <div className="max-h-64 overflow-auto p-2">
+        <div className="max-h-64 overflow-auto overscroll-contain p-2">
           <JsonView value={events} />
         </div>
       ) : null}
     </div>
   );
+}
+
+function parseJsonRecord(value: unknown): Record<string, unknown> | null {
+  if (isRecord(value)) {
+    return value;
+  }
+
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(value);
+
+    return isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function toolSearchService(call: ToolCallTrace): string | null {
+  const args = parseJsonRecord(call.arguments);
+  const output = parseJsonRecord(call.output);
+  const value = args?.searchService ?? output?.searchService;
+
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function toolDisplayName(call: ToolCallTrace): string {
+  if (call.name !== "web_search") {
+    return call.name;
+  }
+
+  const searchService = toolSearchService(call);
+
+  return searchService ? `${call.name} (${searchService})` : call.name;
 }
 
 function ToolTimeline({ calls }: { calls: ToolCallTrace[] }) {
@@ -2802,7 +2873,7 @@ function ToolTimeline({ calls }: { calls: ToolCallTrace[] }) {
         >
           <summary className="grid cursor-pointer grid-cols-[1fr_auto] gap-2 px-2 py-1.5">
             <span className="truncate font-mono text-xs tabular-nums text-zinc-900 dark:text-zinc-100">
-              {call.name}
+              {toolDisplayName(call)}
             </span>
             <span
               className={classNames(
@@ -2814,7 +2885,9 @@ function ToolTimeline({ calls }: { calls: ToolCallTrace[] }) {
                     : "text-zinc-500",
               )}
             >
-              {call.durationMs ? `${call.durationMs}ms` : call.status}
+              {call.durationMs !== undefined
+                ? `${call.durationMs}ms`
+                : call.status}
             </span>
           </summary>
           <div className="border-t border-zinc-200 dark:border-zinc-800">
@@ -2930,7 +3003,7 @@ function JsonBlock({
           </button>
         ) : null}
       </div>
-      <div className="max-h-64 overflow-auto p-2">
+      <div className="max-h-64 overflow-auto overscroll-contain p-2">
         <JsonView value={displayValue} />
       </div>
     </div>
