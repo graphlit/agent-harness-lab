@@ -21,10 +21,9 @@ import {
   toStreamAgentToolHandlers,
 } from "@/lib/tools/recordTool";
 
-function readMessage(event: AgentStreamEvent): {
-  text?: string;
-  thinking?: string;
-} {
+const GRAPHLIT_MESSAGE_PREVIEW_CHARS = 240;
+
+function readMessage(event: AgentStreamEvent): { text?: string } {
   if (event.type !== "message_update") {
     return {};
   }
@@ -32,11 +31,43 @@ function readMessage(event: AgentStreamEvent): {
   const message = event.message;
   const text = message?.message ?? "";
 
-  if (message?.isThinking) {
-    return { thinking: text };
+  return { text };
+}
+
+function compactGraphlitStreamEvent(event: AgentStreamEvent): unknown {
+  if (event.type !== "message_update") {
+    return event;
   }
 
-  return { text };
+  const message = event.message;
+  const text = message?.message ?? "";
+
+  return {
+    type: event.type,
+    isStreaming: event.isStreaming,
+    metrics: event.metrics,
+    message: {
+      role: message?.role,
+      timestamp: message?.timestamp,
+      model: message?.model,
+      modelName: message?.modelName,
+      modelService: message?.modelService,
+      isThinking: message?.isThinking,
+      messageChars: text.length,
+      messagePreview:
+        text.length > GRAPHLIT_MESSAGE_PREVIEW_CHARS
+          ? `${text.slice(0, GRAPHLIT_MESSAGE_PREVIEW_CHARS)}...`
+          : text,
+    },
+  };
+}
+
+function readReasoning(event: AgentStreamEvent): string {
+  if (event.type !== "reasoning_update" || !("content" in event)) {
+    return "";
+  }
+
+  return typeof event.content === "string" ? event.content : "";
 }
 
 function logGraphlitLane(
@@ -115,6 +146,21 @@ export async function runGraphlitLane(
     context.systemPrompt,
     context.runtimeInstructions,
   );
+  let lastThinkingSnapshot = "";
+
+  function thinkingDelta(snapshot: string): string {
+    if (!snapshot || snapshot === lastThinkingSnapshot) {
+      return "";
+    }
+
+    const delta = snapshot.startsWith(lastThinkingSnapshot)
+      ? snapshot.slice(lastThinkingSnapshot.length)
+      : snapshot;
+
+    lastThinkingSnapshot = snapshot;
+
+    return delta;
+  }
 
   try {
     const startEvent = {
@@ -149,7 +195,7 @@ export async function runGraphlitLane(
     await client.streamAgent(
       context.prompt,
       (event) => {
-        recorder.recordRaw(event);
+        recorder.recordRaw(compactGraphlitStreamEvent(event));
         logGraphlitLane("streamAgent.event", {
           runId: context.runId,
           turnId: context.turnId,
@@ -166,22 +212,34 @@ export async function runGraphlitLane(
         }
 
         if (event.type === "message_update") {
-          const { text, thinking } = readMessage(event);
+          const { text } = readMessage(event);
 
-          if (thinking) {
+          if (typeof text === "string") {
+            void recorder.emitSnapshot(text);
+          }
+        }
+
+        if (event.type === "reasoning_update") {
+          const delta = thinkingDelta(readReasoning(event));
+
+          if (delta) {
             void context.emit({
               type: "lane_reasoning_delta",
               runId: context.runId,
               turnId: context.turnId,
               laneId: "graphlit",
-              text: thinking,
+              text: delta,
             });
-          } else if (typeof text === "string") {
-            void recorder.emitSnapshot(text);
           }
         }
 
         if (event.type === "conversation_completed") {
+          const finalMessage = event.message?.message;
+
+          if (typeof finalMessage === "string" && finalMessage.length > 0) {
+            recorder.setAnswer(finalMessage);
+          }
+
           recorder.recordTokenUsage(event.usage, "Graphlit turn usage");
         }
 

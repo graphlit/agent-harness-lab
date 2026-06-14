@@ -82,10 +82,17 @@ export async function POST(request: NextRequest) {
     }
 
     if (results.length < 2) {
-      return Response.json(
-        { error: "Judge requires at least two completed lanes." },
-        { status: 400 },
-      );
+      logJudge("request.skipped", {
+        runId,
+        turnId,
+        reason: "fewer_than_two_completed_lanes",
+        completedCount: results.length,
+      });
+
+      return Response.json({
+        skipped: true,
+        reason: "Judge skipped because fewer than two lanes completed.",
+      });
     }
 
     logJudge("runner.import.start", { runId, turnId });

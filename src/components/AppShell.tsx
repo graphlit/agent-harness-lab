@@ -789,6 +789,7 @@ export function AppShell() {
   const [enabledLanes, setEnabledLanes] = useState<Set<LaneId>>(
     () => new Set(DEFAULT_LANES),
   );
+  const enabledLanesRef = useRef<Set<LaneId>>(new Set(DEFAULT_LANES));
   const [runLaneIds, setRunLaneIds] = useState<Set<LaneId>>(
     () => new Set(DEFAULT_LANES),
   );
@@ -894,6 +895,7 @@ export function AppShell() {
           setModelProvider(status.defaultModelProvider);
           setModelSize(status.defaultModelSize);
           const nextEnabled = defaultEnabledLanes(status);
+          enabledLanesRef.current = nextEnabled;
           setEnabledLanes(nextEnabled);
           setRunLaneIds(nextEnabled);
         }
@@ -919,11 +921,6 @@ export function AppShell() {
       cancelled = true;
     };
   }, []);
-
-  const selectedLanes = useMemo(
-    () => LANE_IDS.filter((laneId) => enabledLanes.has(laneId)),
-    [enabledLanes],
-  );
 
   const laneList = useMemo(
     () => LANE_IDS.map((laneId) => lanes[laneId]),
@@ -1077,6 +1074,9 @@ export function AppShell() {
     const turnId = createClientId("turn");
     const runtimeUtc = new Date().toISOString();
     const activeSessionId = getSessionId();
+    const selectedLanes = LANE_IDS.filter((laneId) =>
+      enabledLanesRef.current.has(laneId),
+    );
     const selectedLaneSet = new Set(selectedLanes);
     const priorVisibleLaneIds = LANE_IDS.filter((laneId) =>
       laneHasTranscript(lanes[laneId]),
@@ -1255,11 +1255,7 @@ export function AppShell() {
 
       if (judgeEnabled) {
         if (completed.length < 2) {
-          setJudge({
-            status: "failed",
-            turnId,
-            error: "Judge requires at least two completed lanes.",
-          });
+          setJudge({ status: "idle", turnId });
         } else {
           setJudge({ status: "running", turnId });
 
@@ -1365,6 +1361,7 @@ export function AppShell() {
     runSequenceRef.current += 1;
     sessionIdRef.current = createClientId("session");
     const nextEnabled = defaultEnabledLanes(bootstrap);
+    enabledLanesRef.current = nextEnabled;
 
     setPrompt("");
     setActivePrompt("");
@@ -1395,17 +1392,16 @@ export function AppShell() {
       return;
     }
 
-    setEnabledLanes((current) => {
-      const next = new Set(current);
+    const next = new Set(enabledLanesRef.current);
 
-      if (next.has(laneId)) {
-        next.delete(laneId);
-      } else {
-        next.add(laneId);
-      }
+    if (next.has(laneId)) {
+      next.delete(laneId);
+    } else {
+      next.add(laneId);
+    }
 
-      return next;
-    });
+    enabledLanesRef.current = next;
+    setEnabledLanes(next);
   }
 
   return (
