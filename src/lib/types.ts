@@ -259,6 +259,8 @@ export type LabRunEvent =
       turnId: string;
       laneId: LaneId;
       error: string;
+      details?: Record<string, unknown>;
+      result?: LaneRunResult;
     }
   | { type: "judge_started"; runId: string; turnId: string }
   | {

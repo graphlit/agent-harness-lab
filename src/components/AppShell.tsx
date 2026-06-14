@@ -387,14 +387,37 @@ function nextLaneState(
           result: event.result,
         }),
       );
-    case "lane_failed":
-      return updateLaneTurn(state, turnId, (turn) => ({
-        ...turn,
-        status: "failed",
-        completedAt: turn.completedAt ?? new Date().toISOString(),
-        error: event.error,
-        rawEvents: [...turn.rawEvents, recordedEvent],
-      }));
+    case "lane_failed": {
+      const failureResult = event.result;
+
+      return updateLaneTurn(
+        failureResult?.session
+          ? {
+              ...state,
+              session: { ...state.session, ...failureResult.session },
+            }
+          : state,
+        turnId,
+        (turn) => ({
+          ...turn,
+          status: "failed",
+          completedAt:
+            failureResult?.completedAt ??
+            turn.completedAt ??
+            new Date().toISOString(),
+          answer: failureResult?.finalAnswer || turn.answer,
+          sources: failureResult?.sources ?? turn.sources,
+          toolCalls: failureResult?.toolCalls ?? turn.toolCalls,
+          error: event.error,
+          rawEvents: [
+            ...turn.rawEvents,
+            ...(failureResult?.rawEvents ?? []),
+            recordedEvent,
+          ],
+          result: failureResult ?? turn.result,
+        }),
+      );
+    }
     default:
       return state;
   }
@@ -2316,15 +2339,18 @@ function LanePanel({
   const hasTranscript = laneHasTranscript(lane);
   const latestTurn = lane.turns.at(-1);
   const isInProgress = isLaneInProgress(latestTurn?.status);
+  const isFailed = latestTurn?.status === "failed";
 
   return (
     <article className="flex h-full min-h-0 w-full shrink-0 snap-center flex-col border-r border-zinc-200 bg-white md:w-[25vw] md:min-w-[320px] md:max-w-[400px] md:snap-align-none md:[scroll-snap-align:none] dark:border-zinc-800 dark:bg-[#09090b]">
       <header
         className={classNames(
           "border-b px-3 py-2 transition-colors",
-          isInProgress
-            ? "border-emerald-200 bg-emerald-50/80 dark:border-emerald-900/60 dark:bg-emerald-950/20"
-            : "border-zinc-200 dark:border-zinc-800",
+          isFailed
+            ? "border-red-200 bg-red-50/90 dark:border-red-900/60 dark:bg-red-950/20"
+            : isInProgress
+              ? "border-emerald-200 bg-emerald-50/80 dark:border-emerald-900/60 dark:bg-emerald-950/20"
+              : "border-zinc-200 dark:border-zinc-800",
         )}
       >
         <div className="flex items-start justify-between gap-3">
@@ -2341,6 +2367,12 @@ function LanePanel({
                   className="ml-1 h-2 w-2 rounded-full bg-emerald-500 shadow-[0_0_0_3px_rgba(16,185,129,0.16)] animate-pulse"
                   aria-label="In progress"
                   title="In progress"
+                />
+              ) : isFailed ? (
+                <span
+                  className="ml-1 h-2 w-2 rounded-full bg-red-500 shadow-[0_0_0_3px_rgba(239,68,68,0.16)]"
+                  aria-label="Failed"
+                  title="Failed"
                 />
               ) : null}
             </h2>

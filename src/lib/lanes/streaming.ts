@@ -7,6 +7,32 @@ type ReadableTextStream =
   | ReadableStream<string>
   | NodeJS.ReadableStream;
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+export function lastStructuredStepText(steps: unknown): string {
+  if (!Array.isArray(steps)) {
+    return "";
+  }
+
+  for (let index = steps.length - 1; index >= 0; index -= 1) {
+    const step = steps[index];
+
+    if (!isRecord(step) || typeof step.text !== "string") {
+      continue;
+    }
+
+    const text = step.text.trim();
+
+    if (text) {
+      return text;
+    }
+  }
+
+  return "";
+}
+
 export function sentenceChunk(buffer: string): string | null {
   const match = /[.!?](?:["')\]]+)?(?:\s+|$)|[\r\n]+/.exec(buffer);
 

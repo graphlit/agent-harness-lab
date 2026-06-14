@@ -26,10 +26,18 @@ function logOpenAiLane(
 function finalOutputText(result: unknown): string {
   if (result && typeof result === "object" && "finalOutput" in result) {
     const value = (result as { finalOutput?: unknown }).finalOutput;
-    return typeof value === "string" ? value : JSON.stringify(value ?? "");
+    if (value == null) {
+      return "";
+    }
+
+    return typeof value === "string" ? value : JSON.stringify(value);
   }
 
-  return typeof result === "string" ? result : JSON.stringify(result ?? "");
+  if (result == null) {
+    return "";
+  }
+
+  return typeof result === "string" ? result : JSON.stringify(result);
 }
 
 function parseToolArguments(inputSchema: unknown, args: unknown): unknown {
@@ -195,8 +203,10 @@ export async function runOpenAiAgentsLane(
       }),
     );
 
-    if (!recorder.getAnswer()) {
-      await recorder.emitSnapshot(finalOutputText(result));
+    const resolvedFinalText = finalOutputText(result);
+
+    if (resolvedFinalText && resolvedFinalText !== recorder.getAnswer()) {
+      await recorder.emitSnapshot(resolvedFinalText);
     }
 
     return recorder.result();

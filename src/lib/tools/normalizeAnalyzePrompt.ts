@@ -105,11 +105,16 @@ const DEEP_RESEARCH_MUST_INCLUDE = [
   "taxonomy",
   "canonical systems and papers",
   "state-of-the-art techniques",
+  "storage and architecture tradeoffs",
   "benchmarks and evaluation",
   "limitations, risks, and failure modes",
   "practical architecture guidance",
   "future directions",
+  "key sources or bibliography",
 ];
+
+const LONG_FORM_RESEARCH_FORMAT_INSTRUCTION =
+  "For long-form technical research deliverables, use a scannable article structure with clear headings, sufficient depth for the requested scope, comparison tables where useful, practical guidance, and a categorized source list or bibliography. Do not impose terse one-line bullet or 2-3 sentence paragraph limits unless the user explicitly requested them.";
 
 const NEXT_STEP_TOOLS = new Set<AnalyzeNextStepTool>([
   "retrieve_contents",
@@ -154,6 +159,17 @@ function upsertConstraint(
   }
 
   return [...constraints, { type, instruction }];
+}
+
+function replaceConstraint(
+  constraints: AnalyzeConstraint[],
+  type: AnalyzeConstraintType,
+  instruction: string,
+): AnalyzeConstraint[] {
+  return [
+    ...constraints.filter((constraint) => constraint.type !== type),
+    { type, instruction },
+  ];
 }
 
 function firstEvidenceStep(
@@ -234,11 +250,41 @@ function validNextStep(value: unknown): AnalyzeNextStep | undefined {
   };
 }
 
+function normalizeExistingNextStep(
+  result: AnalyzePromptResult,
+  nextStep: AnalyzeNextStep,
+): AnalyzeNextStep {
+  if (nextStep.tool !== "web_search") {
+    return nextStep;
+  }
+
+  const parameters = isRecord(nextStep.parameters)
+    ? nextStep.parameters
+    : {};
+  const query =
+    typeof parameters.query === "string" && parameters.query.trim()
+      ? parameters.query
+      : firstEvidenceStep(result.evidencePlan)?.queryOrTarget ?? result.prompt;
+
+  return {
+    ...nextStep,
+    parameters: {
+      ...parameters,
+      query,
+      searchService:
+        typeof parameters.searchService === "string"
+          ? parameters.searchService
+          : "PARALLEL",
+      limit: 5,
+    },
+  };
+}
+
 function normalizeNextStep(result: AnalyzePromptResult): AnalyzeNextStep {
   const existing = validNextStep(result.nextStep);
 
   if (existing) {
-    return existing;
+    return normalizeExistingNextStep(result, existing);
   }
 
   if (!result.retrievalNeeded) {
@@ -340,10 +386,10 @@ function normalizeConstraints(result: AnalyzePromptResult): AnalyzeConstraint[] 
     result.answerContract.shape === "blog_post" ||
     result.answerContract.shape === "report"
   ) {
-    constraints = upsertConstraint(
+    constraints = replaceConstraint(
       constraints,
       "format",
-      "Use clear headings and readable prose; use bullets, tables, or diagrams only where they improve scanning.",
+      LONG_FORM_RESEARCH_FORMAT_INSTRUCTION,
     );
   }
 

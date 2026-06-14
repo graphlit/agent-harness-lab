@@ -33,6 +33,21 @@ type GraphlitCompletedUsage = Extract<
   AgentStreamEvent,
   { type: "conversation_completed" }
 >["usage"];
+type GraphlitAnswerSegment = {
+  latestFullText: string;
+  segmentStart: number;
+  sawToolBoundary: boolean;
+  lastEmittedText: string;
+};
+
+function createGraphlitAnswerSegment(): GraphlitAnswerSegment {
+  return {
+    latestFullText: "",
+    segmentStart: 0,
+    sawToolBoundary: false,
+    lastEmittedText: "",
+  };
+}
 
 function createGraphlitUsageTotals(): GraphlitUsageTotals {
   return {
@@ -66,6 +81,39 @@ function readMessage(event: AgentStreamEvent): { text?: string } {
   const text = message?.message ?? "";
 
   return { text };
+}
+
+function visibleGraphlitAnswerText(
+  segment: GraphlitAnswerSegment,
+  text: string,
+): string {
+  if (!segment.sawToolBoundary) {
+    return text;
+  }
+
+  return text.slice(Math.min(segment.segmentStart, text.length)).trimStart();
+}
+
+function resetGraphlitAnswerSegment(
+  segment: GraphlitAnswerSegment,
+  event: AgentStreamEvent,
+): { changed: boolean; toolName?: string; status?: string } {
+  if (event.type !== "tool_update") {
+    return { changed: false };
+  }
+
+  const previousStart = segment.segmentStart;
+  const previousSawToolBoundary = segment.sawToolBoundary;
+
+  segment.sawToolBoundary = true;
+  segment.segmentStart = segment.latestFullText.length;
+
+  return {
+    changed:
+      !previousSawToolBoundary || previousStart !== segment.segmentStart,
+    toolName: event.toolCall?.name ?? undefined,
+    status: event.status,
+  };
 }
 
 function compactGraphlitStreamEvent(event: AgentStreamEvent): unknown {
@@ -182,6 +230,7 @@ export async function runGraphlitLane(
   );
   let lastThinkingSnapshot = "";
   const usageTotals = createGraphlitUsageTotals();
+  const answerSegment = createGraphlitAnswerSegment();
 
   function thinkingDelta(snapshot: string): string {
     if (!snapshot || snapshot === lastThinkingSnapshot) {
@@ -195,6 +244,15 @@ export async function runGraphlitLane(
     lastThinkingSnapshot = snapshot;
 
     return delta;
+  }
+
+  function emitGraphlitAnswerSnapshot(text: string): void {
+    if (text === answerSegment.lastEmittedText) {
+      return;
+    }
+
+    answerSegment.lastEmittedText = text;
+    void recorder.emitSnapshot(text);
   }
 
   try {
@@ -237,6 +295,22 @@ export async function runGraphlitLane(
           eventType: event.type,
         });
 
+        const segmentReset = resetGraphlitAnswerSegment(answerSegment, event);
+
+        if (segmentReset.changed) {
+          recorder.recordPhase("graphlit.answer_segment.reset", {
+            toolName: segmentReset.toolName,
+            status: segmentReset.status,
+            fullTextChars: answerSegment.latestFullText.length,
+          });
+          emitGraphlitAnswerSnapshot(
+            visibleGraphlitAnswerText(
+              answerSegment,
+              answerSegment.latestFullText,
+            ),
+          );
+        }
+
         if (
           event.type === "conversation_started" &&
           "conversationId" in event &&
@@ -250,7 +324,10 @@ export async function runGraphlitLane(
           const { text } = readMessage(event);
 
           if (typeof text === "string") {
-            void recorder.emitSnapshot(text);
+            answerSegment.latestFullText = text;
+            emitGraphlitAnswerSnapshot(
+              visibleGraphlitAnswerText(answerSegment, text),
+            );
           }
         }
 
@@ -272,7 +349,9 @@ export async function runGraphlitLane(
           const finalMessage = event.message?.message;
 
           if (typeof finalMessage === "string" && finalMessage.length > 0) {
-            recorder.setAnswer(finalMessage);
+            recorder.setAnswer(
+              visibleGraphlitAnswerText(answerSegment, finalMessage),
+            );
           }
 
           addGraphlitUsage(usageTotals, event.usage);

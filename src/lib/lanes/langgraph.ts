@@ -17,11 +17,12 @@ import type {
   LaneSessionState,
 } from "@/lib/types";
 import { createGraphlitTools } from "@/lib/tools/createGraphlitTools";
-import { recordGraphlitToolsWithRequiredFirst } from "@/lib/tools/recordTool";
+import { recordGraphlitToolCall } from "@/lib/tools/recordTool";
 import { errorMessage, safeJson } from "@/lib/utils";
 import type { BaseMessage, StoredMessage } from "@langchain/core/messages";
 
 type LangGraphToolChoice =
+  | string
   | "any"
   | {
       type: "allowed_tools";
@@ -163,17 +164,17 @@ function toolResultText(result: unknown): string {
 
 function requiredFirstLangGraphToolChoice(
   modelProvider: LaneRunContext["modelProvider"],
-  toolNames: string[],
+  toolName: string,
 ): LangGraphToolChoice {
   if (modelProvider === "openai") {
     return {
       type: "allowed_tools",
       mode: "required",
-      tools: toolNames.map((name) => ({ type: "function", name })),
+      tools: [{ type: "function", name: toolName }],
     };
   }
 
-  return "any";
+  return toolName;
 }
 
 export async function runLangGraphLane(
@@ -191,10 +192,8 @@ export async function runLangGraphLane(
   });
   recorder.setSession(context.laneSession ?? {});
   const client = createGraphlitClient();
-  const graphlitTools = recordGraphlitToolsWithRequiredFirst(
-    createGraphlitTools(client),
-    recorder,
-    ANALYZE_PROMPT_TOOL_NAME,
+  const graphlitTools = createGraphlitTools(client).map((graphlitTool) =>
+    recordGraphlitToolCall(graphlitTool, recorder),
   );
   const instructions = mergeAgentInstructions(
     context.systemPrompt,
@@ -318,7 +317,7 @@ export async function runLangGraphLane(
           ...request,
           toolChoice: requiredFirstLangGraphToolChoice(
             context.modelProvider,
-            [ANALYZE_PROMPT_TOOL_NAME],
+            ANALYZE_PROMPT_TOOL_NAME,
           ) as never,
         });
       },

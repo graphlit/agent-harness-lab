@@ -282,7 +282,6 @@ function buildGraphlitSpecification(
       enableEntityExtraction: false,
       enableFactExtraction: false,
       toolRoundLimit: AGENT_MAX_STEPS,
-      toolResultTokenLimit: 6_000,
     },
   };
 

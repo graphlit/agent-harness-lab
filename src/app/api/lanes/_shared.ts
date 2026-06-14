@@ -21,7 +21,7 @@ import {
   type ModelSize,
   type ReasoningEffort,
 } from "@/lib/types";
-import { createId, errorMessage } from "@/lib/utils";
+import { createId, errorDetails, errorMessage } from "@/lib/utils";
 
 const LANE_RUN_TIMEOUT_MS = LONG_RUNNING_TEST_TIMEOUT_MS;
 
@@ -263,6 +263,7 @@ export function createLaneRoute(laneId: LaneId, loadLaneRunner: LaneRunnerLoader
             turnId,
             laneId,
             error: result.error,
+            result,
           });
         } else {
           logLaneRoute(laneId, "lane.completed", {
@@ -281,14 +282,21 @@ export function createLaneRoute(laneId: LaneId, loadLaneRunner: LaneRunnerLoader
         }
       } catch (error) {
         const message = errorMessage(error);
+        const details = errorDetails(error);
 
-        logLaneRoute(laneId, "lane.failed", { runId, turnId, error: message });
+        logLaneRoute(laneId, "lane.failed", {
+          runId,
+          turnId,
+          error: message,
+          details,
+        });
         await emit({
           type: "lane_failed",
           runId,
           turnId,
           laneId,
           error: message,
+          details,
         });
       }
 

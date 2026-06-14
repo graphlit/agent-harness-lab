@@ -8,10 +8,10 @@ import {
 } from "@/lib/constants";
 import { createGraphlitClient } from "@/lib/graphlit/client";
 import { LaneRunRecorder } from "@/lib/lanes/recorder";
-import { emitTextStream } from "@/lib/lanes/streaming";
+import { emitTextStream, lastStructuredStepText } from "@/lib/lanes/streaming";
 import { requireModelProviderApiKey } from "@/lib/model-provider-keys";
 import type { LaneRunContext, LaneRunResult } from "@/lib/types";
-import { errorMessage, safeJson } from "@/lib/utils";
+import { errorDetails, errorMessage, safeJson } from "@/lib/utils";
 import { createGraphlitTools } from "@/lib/tools/createGraphlitTools";
 import { recordGraphlitToolsWithRequiredFirst } from "@/lib/tools/recordTool";
 import type { Memory as MastraMemory } from "@mastra/memory";
@@ -259,10 +259,11 @@ export async function runMastraLane(
       abortSignal: context.abortSignal,
     });
     await emitTextStream(result.textStream, recorder);
-    const [finalText, fullOutput, totalUsage] = await Promise.all([
+    const [finalText, fullOutput, totalUsage, steps] = await Promise.all([
       result.text,
       result.getFullOutput(),
       result.totalUsage,
+      "steps" in result ? result.steps : Promise.resolve(undefined),
     ]);
     logMastraLane("stream.complete", {
       runId: context.runId,
@@ -278,6 +279,7 @@ export async function runMastraLane(
     recorder.recordRaw(
       safeJson({
         output: fullOutput,
+        steps,
         totalUsage,
         streaming: {
           api: "Agent.stream().textStream",
@@ -286,17 +288,32 @@ export async function runMastraLane(
       }),
     );
 
-    if (!recorder.getAnswer()) {
-      await recorder.emitSnapshot(finalText || mastraOutputText(fullOutput));
+    const structuredFinalText = lastStructuredStepText(steps);
+    const resolvedFinalText =
+      structuredFinalText || finalText || mastraOutputText(fullOutput);
+
+    if (resolvedFinalText && resolvedFinalText !== recorder.getAnswer()) {
+      await recorder.emitSnapshot(resolvedFinalText);
     }
 
     return recorder.result();
   } catch (error) {
+    const message = errorMessage(error);
+    const details = errorDetails(error);
+
     logMastraLane("stream.failed", {
       runId: context.runId,
       turnId: context.turnId,
-      error: errorMessage(error),
+      error: message,
+      details,
     });
-    return recorder.result(errorMessage(error));
+    recorder.recordRaw(
+      safeJson({
+        type: "lane_error",
+        phase: "mastra.stream.failed",
+        error: details,
+      }),
+    );
+    return recorder.result(message);
   }
 }

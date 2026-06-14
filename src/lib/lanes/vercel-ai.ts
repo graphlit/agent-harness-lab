@@ -8,7 +8,11 @@ import {
 } from "@/lib/constants";
 import { createGraphlitClient } from "@/lib/graphlit/client";
 import { LaneRunRecorder } from "@/lib/lanes/recorder";
-import { emitTextStream, sentenceChunk } from "@/lib/lanes/streaming";
+import {
+  emitTextStream,
+  lastStructuredStepText,
+  sentenceChunk,
+} from "@/lib/lanes/streaming";
 import { requireModelProviderApiKey } from "@/lib/model-provider-keys";
 import type {
   JsonValue,
@@ -231,8 +235,11 @@ export async function runVercelAiLane(
       }),
     );
 
-    if (!recorder.getAnswer()) {
-      await recorder.emitSnapshot(finalText);
+    const structuredFinalText = lastStructuredStepText(steps);
+    const resolvedFinalText = structuredFinalText || finalText;
+
+    if (resolvedFinalText && resolvedFinalText !== recorder.getAnswer()) {
+      await recorder.emitSnapshot(resolvedFinalText);
     }
 
     return recorder.result();

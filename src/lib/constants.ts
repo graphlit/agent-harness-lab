@@ -5,7 +5,7 @@ import type {
   ReasoningEffort,
 } from "@/lib/types";
 
-export const AGENT_HARNESS_LAB_BOOTSTRAP_VERSION = "2026-06-14a";
+export const AGENT_HARNESS_LAB_BOOTSTRAP_VERSION = "2026-06-14b";
 
 export const DEFAULT_REASONING_EFFORT: ReasoningEffort = "medium";
 export const DEFAULT_MODEL_PROVIDER: ModelProviderPreference = "openai";
