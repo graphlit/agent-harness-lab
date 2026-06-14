@@ -23,6 +23,40 @@ import {
 
 const GRAPHLIT_MESSAGE_PREVIEW_CHARS = 240;
 
+type GraphlitUsageTotals = {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  seen: boolean;
+};
+type GraphlitCompletedUsage = Extract<
+  AgentStreamEvent,
+  { type: "conversation_completed" }
+>["usage"];
+
+function createGraphlitUsageTotals(): GraphlitUsageTotals {
+  return {
+    promptTokens: 0,
+    completionTokens: 0,
+    totalTokens: 0,
+    seen: false,
+  };
+}
+
+function addGraphlitUsage(
+  totals: GraphlitUsageTotals,
+  usage: GraphlitCompletedUsage,
+): void {
+  if (!usage) {
+    return;
+  }
+
+  totals.promptTokens += usage.promptTokens;
+  totals.completionTokens += usage.completionTokens;
+  totals.totalTokens += usage.totalTokens;
+  totals.seen = true;
+}
+
 function readMessage(event: AgentStreamEvent): { text?: string } {
   if (event.type !== "message_update") {
     return {};
@@ -147,6 +181,7 @@ export async function runGraphlitLane(
     context.runtimeInstructions,
   );
   let lastThinkingSnapshot = "";
+  const usageTotals = createGraphlitUsageTotals();
 
   function thinkingDelta(snapshot: string): string {
     if (!snapshot || snapshot === lastThinkingSnapshot) {
@@ -240,7 +275,7 @@ export async function runGraphlitLane(
             recorder.setAnswer(finalMessage);
           }
 
-          recorder.recordTokenUsage(event.usage, "Graphlit turn usage");
+          addGraphlitUsage(usageTotals, event.usage);
         }
 
         if (event.type === "error") {
@@ -288,6 +323,13 @@ export async function runGraphlitLane(
       laneId: "graphlit",
       event: completeEvent,
     });
+
+    if (usageTotals.seen) {
+      recorder.recordTokenUsage(
+        usageTotals,
+        "Graphlit aggregated current turn usage",
+      );
+    }
 
     return recorder.result();
   } catch (error) {

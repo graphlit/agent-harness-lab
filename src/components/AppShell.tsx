@@ -39,6 +39,7 @@ import {
   DEFAULT_MODEL_SIZE,
   DEFAULT_REASONING_EFFORT,
   DEFAULT_SYSTEM_PROMPT_ENABLED,
+  JUDGE_MODEL_LABEL,
   LANE_LABELS,
   LANE_STREAM_LABELS,
   LANE_STREAM_TITLES,
@@ -433,6 +434,10 @@ function formatElapsedMs(ms: number): string {
 
 function formatTokenCount(value: number | null): string {
   return value === null ? "— TOK" : `${value.toLocaleString()} TOK`;
+}
+
+function formatToolCount(value: number): string {
+  return `${value.toLocaleString()} ${value === 1 ? "TOOL" : "TOOLS"}`;
 }
 
 function formatTokenUsageTitle(usage?: TokenUsageTrace): string {
@@ -1519,6 +1524,7 @@ export function AppShell() {
         setSystemPromptEnabled={setSystemPromptEnabled}
         judgeEnabled={judgeEnabled}
         setJudgeEnabled={setJudgeEnabled}
+        judgeStatus={judge.status}
         enabledLanes={enabledLanes}
         toggleLane={toggleLane}
         bootstrap={bootstrap}
@@ -1567,6 +1573,7 @@ function Composer({
   setSystemPromptEnabled,
   judgeEnabled,
   setJudgeEnabled,
+  judgeStatus,
   enabledLanes,
   toggleLane,
   bootstrap,
@@ -1593,6 +1600,7 @@ function Composer({
   setSystemPromptEnabled: (value: boolean) => void;
   judgeEnabled: boolean;
   setJudgeEnabled: (value: boolean) => void;
+  judgeStatus: JudgeUiState["status"];
   enabledLanes: Set<LaneId>;
   toggleLane: (laneId: LaneId) => void;
   bootstrap: BootstrapStatus | null;
@@ -1610,12 +1618,18 @@ function Composer({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [ingestStatus, setIngestStatus] = useState<IngestUiStatus | null>(null);
   const [isUriFormOpen, setIsUriFormOpen] = useState(false);
+  const [isIngestInfoOpen, setIsIngestInfoOpen] = useState(false);
   const [uriValue, setUriValue] = useState("");
   const isIngesting = ingestStatus?.state === "running";
   const graphlitIngestDisabled =
     isRunning || isIngesting || bootstrap?.graphlit.ready !== true;
   const graphlitIngestDisabledReason =
-    bootstrap?.graphlit.error ?? "Checking Graphlit project...";
+    bootstrap?.graphlit.error ??
+    (isRunning
+      ? "Wait for the current run to finish"
+      : isIngesting
+        ? "Graphlit ingestion is already running"
+        : "Checking Graphlit project...");
   const statusText = bootstrap?.graphlit.ready
     ? "Project initialized successfully."
     : (bootstrap?.graphlit.error ?? "Checking Graphlit project...");
@@ -1626,7 +1640,9 @@ function Composer({
     "Ready.";
   const activePromptText = activePrompt.trim();
   const footerStatusText = activePromptText
-    ? `Prompt: ${activePromptText}`
+    ? judgeStatus === "running"
+      ? `Judging with ${JUDGE_MODEL_LABEL}: ${activePromptText}`
+      : `Prompt: ${activePromptText}`
     : isRunning
       ? `Running ${enabledLanes.size.toLocaleString()} ${
           enabledLanes.size === 1 ? "lane" : "lanes"
@@ -1727,6 +1743,7 @@ function Composer({
     const file = event.currentTarget.files?.[0];
     event.currentTarget.value = "";
     setIsUriFormOpen(false);
+    setIsIngestInfoOpen(false);
 
     if (file) {
       void ingestSelectedFile(file);
@@ -1836,48 +1853,75 @@ function Composer({
             />
             <div className="absolute bottom-2 left-3 right-3 flex items-center justify-between gap-3">
               <div className="flex min-w-0 flex-1 items-center gap-1">
-                <button
-                  type="button"
-                  aria-label="Add file"
-                  title={
+                <IconTooltip
+                  label={
                     graphlitIngestDisabled
                       ? graphlitIngestDisabledReason
-                      : "Add file"
+                      : "Upload a file into this Graphlit project"
                   }
-                  className="flex items-center justify-center w-8 h-8 rounded-md text-zinc-400 hover:text-zinc-900 hover:bg-zinc-100 dark:hover:text-zinc-100 dark:hover:bg-zinc-800 transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <button
+                    type="button"
+                    aria-label="Upload file into Graphlit"
+                    className="flex items-center justify-center w-8 h-8 rounded-md text-zinc-400 hover:text-zinc-900 hover:bg-zinc-100 dark:hover:text-zinc-100 dark:hover:bg-zinc-800 transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+                    onClick={() => {
+                      setIsUriFormOpen(false);
+                      setIsIngestInfoOpen(false);
+                      fileInputRef.current?.click();
+                    }}
+                    disabled={graphlitIngestDisabled}
+                  >
+                    {isIngesting && ingestStatus?.kind === "file" ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Paperclip className="w-4 h-4" />
+                    )}
+                  </button>
+                </IconTooltip>
+                <IconTooltip
+                  label={
+                    graphlitIngestDisabled
+                      ? graphlitIngestDisabledReason
+                      : "Ingest a URL into this Graphlit project"
+                  }
+                >
+                  <button
+                    type="button"
+                    aria-label="Ingest URL into Graphlit"
+                    className={classNames(
+                      "flex items-center justify-center w-8 h-8 rounded-md text-zinc-400 hover:text-zinc-900 hover:bg-zinc-100 dark:hover:text-zinc-100 dark:hover:bg-zinc-800 transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50",
+                      isUriFormOpen &&
+                        "bg-zinc-100 text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100",
+                    )}
+                    onClick={() => {
+                      setIsIngestInfoOpen(false);
+                      setIsUriFormOpen((current) => !current);
+                    }}
+                    disabled={graphlitIngestDisabled}
+                  >
+                    {isIngesting && ingestStatus?.kind === "uri" ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Globe className="w-4 h-4" />
+                    )}
+                  </button>
+                </IconTooltip>
+                <button
+                  type="button"
+                  aria-label="Show Graphlit ingestion details"
+                  aria-expanded={isIngestInfoOpen}
+                  title="Show Graphlit ingestion details"
+                  className={classNames(
+                    "flex h-8 w-8 items-center justify-center rounded-md text-zinc-400 transition-colors hover:bg-zinc-100 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:hover:text-zinc-100",
+                    isIngestInfoOpen &&
+                      "bg-zinc-100 text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100",
+                  )}
                   onClick={() => {
                     setIsUriFormOpen(false);
-                    fileInputRef.current?.click();
+                    setIsIngestInfoOpen((current) => !current);
                   }}
-                  disabled={graphlitIngestDisabled}
                 >
-                  {isIngesting && ingestStatus?.kind === "file" ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <Paperclip className="w-4 h-4" />
-                  )}
-                </button>
-                <button
-                  type="button"
-                  aria-label="Add URI"
-                  title={
-                    graphlitIngestDisabled
-                      ? graphlitIngestDisabledReason
-                      : "Add URI"
-                  }
-                  className={classNames(
-                    "flex items-center justify-center w-8 h-8 rounded-md text-zinc-400 hover:text-zinc-900 hover:bg-zinc-100 dark:hover:text-zinc-100 dark:hover:bg-zinc-800 transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50",
-                    isUriFormOpen &&
-                    "bg-zinc-100 text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100",
-                  )}
-                  onClick={() => setIsUriFormOpen((current) => !current)}
-                  disabled={graphlitIngestDisabled}
-                >
-                  {isIngesting && ingestStatus?.kind === "uri" ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <Globe className="w-4 h-4" />
-                  )}
+                  <Info className="h-4 w-4" />
                 </button>
                 {isUriFormOpen ? (
                   <>
@@ -1906,6 +1950,41 @@ function Composer({
                   </>
                 ) : null}
               </div>
+              {isIngestInfoOpen ? (
+                <div className="fixed bottom-36 left-4 right-4 z-50 mx-auto max-w-xl">
+                  <div className="rounded-md border border-zinc-200 bg-white p-3 text-left shadow-xl dark:border-zinc-800 dark:bg-zinc-950">
+                    <div className="mb-2 flex items-center justify-between gap-3">
+                      <div className="font-mono text-[10px] uppercase tracking-widest text-zinc-500">
+                        Graphlit Project Context
+                      </div>
+                      <button
+                        type="button"
+                        aria-label="Close Graphlit ingestion details"
+                        className="flex h-6 w-6 items-center justify-center rounded-md text-zinc-400 transition-colors hover:bg-zinc-100 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
+                        onClick={() => setIsIngestInfoOpen(false)}
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                    <div className="space-y-2 text-xs leading-5 text-zinc-600 dark:text-zinc-300">
+                      <p>
+                        File uploads and URL ingestion add content to your
+                        connected Graphlit project before a comparison run.
+                      </p>
+                      <p>
+                        After processing, every enabled lane can retrieve or
+                        inspect that same project content through the shared
+                        read-only Graphlit agent tools.
+                      </p>
+                      <p>
+                        These controls are setup actions from the app, not agent
+                        lane tools. Lanes cannot ingest, delete, enrich, or
+                        mutate project content during the benchmark turn.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
               <button
                 type="button"
                 title="Send (Ctrl+Enter)"
@@ -2346,6 +2425,8 @@ function LaneTurn({
           >
             <Hash className="h-2.5 w-2.5" />
             {formatTokenCount(tokenCount)}
+            <span aria-hidden="true">·</span>
+            {formatToolCount(turn.toolCalls.length)}
           </span>
         </div>
       </div>
@@ -2546,12 +2627,15 @@ function isDisplayHiddenEvent(event: unknown): boolean {
     return false;
   }
 
-  return (
-    event.type === "tool_update" ||
-    event.type === "message_update" ||
-    event.type === "lane_message_delta" ||
-    event.type === "lane_message_snapshot"
-  );
+  const name = eventName(event);
+
+  return [
+    "tool_update",
+    "message_update",
+    "lane_message_delta",
+    "lane_message_snapshot",
+    "stream_event",
+  ].includes(name);
 }
 
 function isAnswerEvent(event: unknown): boolean {

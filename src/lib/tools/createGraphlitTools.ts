@@ -12,6 +12,7 @@ import {
 } from "@graphlit/agent-tools";
 
 import type { LabGraphlitTool } from "@/lib/tools/types";
+import { withNormalizedAnalyzePromptTool } from "@/lib/tools/normalizeAnalyzePrompt";
 import { toLabGraphlitTool } from "@/lib/tools/types";
 
 const READ_ONLY_RESOURCE_KINDS: ResourceKind[] = [
@@ -22,7 +23,9 @@ const READ_ONLY_RESOURCE_KINDS: ResourceKind[] = [
 
 export function createGraphlitTools(client: Graphlit): LabGraphlitTool[] {
   return [
-    toLabGraphlitTool(createAnalyzePromptTool()),
+    withNormalizedAnalyzePromptTool(
+      toLabGraphlitTool(createAnalyzePromptTool()),
+    ),
     toLabGraphlitTool(createRetrieveContentsTool(client, {
       defaultLimit: 8,
       maxLimit: 25,

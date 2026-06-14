@@ -240,7 +240,7 @@ function replaceAnonymousLaneLabels(
 
   return text
     .replace(
-      /\bLanes\s+([A-H](?:(?:,\s*and\s+|,\s*|\s+and\s+)[A-H])*)/gi,
+      /\bLanes\s+([A-H](?:\s*,\s*[A-H])*(?:\s*,?\s+and\s+[A-H])?)\b/gi,
       (match, anonymousIds: string) => {
         const names = Array.from(anonymousIds.matchAll(/[A-H]/gi))
           .map(([anonymousId]) => labelFor(anonymousId))

@@ -42,6 +42,31 @@ The composer can ingest files or URLs as shared setup context before a run. Agen
 
 The optimized system prompt is enabled by default. It asks every harness to call `analyze_prompt` first, then follow the returned routing plan for retrieval, web search, inspection, and synthesis. You can turn the optimized prompt off in the UI to compare provider/harness defaults.
 
+## Shared Project Context
+
+The file and URL buttons in the composer are setup controls for the connected
+Graphlit project, not abilities granted to a single lane:
+
+- File upload sends the selected file to the app server, then calls Graphlit file
+  ingestion for the active project.
+- URL ingest sends the URL to the app server, then calls Graphlit URI ingestion
+  for the active project.
+- The app waits for Graphlit processing before treating the new content as
+  retrieval-ready.
+- Once ready, the content is shared context for every enabled lane in the next
+  comparison run.
+
+That means the comparison stays fair: every lane sees the same project context
+and the same read-only Graphlit agent tools. During a benchmark turn, lanes can
+retrieve, inspect, count, list, read, search, and map through those tools, but
+they cannot add, delete, enrich, or mutate project content.
+
+Uploaded files and ingested URLs are persisted in the configured Graphlit
+project until you manage or delete them in Graphlit. Resetting the lab clears the
+local comparison transcript and lane sessions; it does not delete project
+content from Graphlit. Use [Graphlit Studio](https://www.graphlit.dev/home) to
+review or manage project content outside the lab.
+
 ## Setup
 
 Use Node.js 20.9.0 or newer.
