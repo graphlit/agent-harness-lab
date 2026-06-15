@@ -12,6 +12,7 @@ import {
 } from "@graphlit/agent-tools";
 
 import type { LabGraphlitTool } from "@/lib/tools/types";
+import { withUrlInspectContent } from "@/lib/tools/inspectContentUrl";
 import { withNormalizedAnalyzePromptTool } from "@/lib/tools/normalizeAnalyzePrompt";
 import { toLabGraphlitTool } from "@/lib/tools/types";
 
@@ -31,9 +32,12 @@ export function createGraphlitTools(client: Graphlit): LabGraphlitTool[] {
       maxLimit: 25,
       maxTextLength: 3_500,
     })),
-    toLabGraphlitTool(createInspectContentTool(client, {
-      maxTextLength: 10_000,
-    })),
+    withUrlInspectContent(
+      toLabGraphlitTool(createInspectContentTool(client, {
+        maxTextLength: 10_000,
+      })),
+      client,
+    ),
     toLabGraphlitTool(createCountContentsTool(client)),
     toLabGraphlitTool(createListResourcesTool(client, {
       allowedKinds: READ_ONLY_RESOURCE_KINDS,

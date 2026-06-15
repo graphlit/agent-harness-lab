@@ -196,6 +196,17 @@ function nextStepForEvidenceStep(
         reason: step.reason,
       };
     case "inspect_known_content":
+      if (isUrl(step.queryOrTarget)) {
+        return {
+          tool: "inspect_content",
+          parameters: {
+            uri: step.queryOrTarget,
+            mode: "markdown",
+          },
+          reason: `${step.reason} The URL will be ingested or reused as Graphlit content before inspection.`,
+        };
+      }
+
       return {
         tool: "inspect_content",
         parameters: step.queryOrTarget.startsWith("contents://")
