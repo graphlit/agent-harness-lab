@@ -100,6 +100,8 @@ const PROMPT_HISTORY_KEY = "agent-harness-lab-prompt-history";
 const MAX_PROMPT_HISTORY = 50;
 const LANE_START_TIMEOUT_MS = LONG_RUNNING_TEST_TIMEOUT_MS;
 const JUDGE_CLIENT_TIMEOUT_MS = LONG_RUNNING_TEST_TIMEOUT_MS;
+const PROMPT_TEXTAREA_MIN_ROWS = 2;
+const PROMPT_TEXTAREA_MAX_ROWS = 8;
 
 const initialTurnState = (
   turnId: string,
@@ -138,6 +140,31 @@ type IngestApiResult = {
   ready: boolean;
   message: string;
 };
+
+function resizePromptTextarea(textarea: HTMLTextAreaElement | null): void {
+  if (!textarea) {
+    return;
+  }
+
+  textarea.style.height = "auto";
+
+  const computedStyle = window.getComputedStyle(textarea);
+  const lineHeight = Number.parseFloat(computedStyle.lineHeight) || 24;
+  const paddingTop = Number.parseFloat(computedStyle.paddingTop) || 0;
+  const paddingBottom = Number.parseFloat(computedStyle.paddingBottom) || 0;
+  const borderTop = Number.parseFloat(computedStyle.borderTopWidth) || 0;
+  const borderBottom = Number.parseFloat(computedStyle.borderBottomWidth) || 0;
+  const verticalChrome = paddingTop + paddingBottom + borderTop + borderBottom;
+  const minHeight = lineHeight * PROMPT_TEXTAREA_MIN_ROWS + verticalChrome;
+  const maxHeight = lineHeight * PROMPT_TEXTAREA_MAX_ROWS + verticalChrome;
+  const nextHeight = Math.min(
+    Math.max(textarea.scrollHeight, minHeight),
+    maxHeight,
+  );
+
+  textarea.style.height = `${nextHeight}px`;
+  textarea.style.overflowY = textarea.scrollHeight > maxHeight ? "auto" : "hidden";
+}
 
 type IngestUiStatus = {
   state: "running" | "ready" | "pending" | "error";
@@ -1683,6 +1710,10 @@ function Composer({
     enabledLaneText,
   ].join(" · ");
 
+  useEffect(() => {
+    resizePromptTextarea(promptRef.current);
+  }, [prompt, promptRef]);
+
   function openComposer() {
     setIsCollapsed(false);
     window.setTimeout(() => promptRef.current?.focus(), 0);
@@ -1857,13 +1888,17 @@ function Composer({
           ) : null}
         </div>
         <div className="flex w-full flex-col overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900/20">
-          <div className="relative w-full flex flex-col">
+          <div className="flex w-full flex-col">
             <textarea
               ref={promptRef}
               value={prompt}
-              onChange={(event) => setPrompt(event.target.value)}
+              onChange={(event) => {
+                setPrompt(event.target.value);
+                resizePromptTextarea(event.currentTarget);
+              }}
               onKeyDown={onPromptKeyDown}
-              className="w-full min-h-[100px] appearance-none bg-transparent px-4 pt-4 pb-12 text-base text-zinc-900 outline-none dark:text-zinc-100 placeholder:text-zinc-500 border-none shadow-none focus:outline-none focus:ring-0 focus:shadow-none focus-visible:outline-none focus-visible:ring-0 resize-none"
+              rows={PROMPT_TEXTAREA_MIN_ROWS}
+              className="w-full appearance-none resize-none overflow-y-hidden border-none bg-transparent px-4 py-4 text-base leading-6 text-zinc-900 shadow-none outline-none placeholder:text-zinc-500 focus:outline-none focus:ring-0 focus:shadow-none focus-visible:outline-none focus-visible:ring-0 dark:text-zinc-100"
               placeholder="Ask anything..."
               disabled={isRunning}
             />
@@ -1874,7 +1909,7 @@ function Composer({
               onChange={handleFileChange}
               disabled={graphlitIngestDisabled}
             />
-            <div className="absolute bottom-2 left-3 right-3 flex items-center justify-between gap-3">
+            <div className="flex items-center justify-between gap-3 border-t border-zinc-100 px-3 py-2 dark:border-zinc-800/70">
               <div className="flex min-w-0 flex-1 items-center gap-1">
                 <IconTooltip
                   label={
@@ -3249,6 +3284,8 @@ function JudgePanel({
   }
 
   const judgeLanes = judge.result ? sortedJudgeLanes(judge.result) : [];
+  const isRunning = judge.status === "running";
+  const isFailed = judge.status === "failed";
   const copyLabel =
     copyState === "copied"
       ? "Copied judge report"
@@ -3274,8 +3311,26 @@ function JudgePanel({
   }
 
   return (
-    <aside className="flex max-h-64 shrink-0 flex-col border-t border-zinc-200 bg-white dark:border-zinc-800 dark:bg-[#09090b]">
-      <div className="shrink-0 border-b border-zinc-200 px-3 py-2 dark:border-zinc-800">
+    <aside
+      className={classNames(
+        "flex max-h-64 shrink-0 flex-col border-t bg-white transition-colors dark:bg-[#09090b]",
+        isFailed
+          ? "border-red-200 dark:border-red-900/60"
+          : isRunning
+            ? "border-emerald-200 dark:border-emerald-900/60"
+            : "border-zinc-200 dark:border-zinc-800",
+      )}
+    >
+      <div
+        className={classNames(
+          "shrink-0 border-b px-3 py-2 transition-colors",
+          isFailed
+            ? "border-red-200 bg-red-50/90 dark:border-red-900/60 dark:bg-red-950/20"
+            : isRunning
+              ? "border-emerald-200 bg-emerald-50/80 dark:border-emerald-900/60 dark:bg-emerald-950/20"
+              : "border-zinc-200 dark:border-zinc-800",
+        )}
+      >
         <div className="flex items-center justify-between gap-3">
           <div>
             <div className="text-xs font-semibold uppercase tracking-widest text-zinc-500">
@@ -3286,7 +3341,7 @@ function JudgePanel({
                 ? judge.result?.winnerLaneId
                   ? `Winner: ${LANE_LABELS[judge.result.winnerLaneId]}`
                   : "No clear winner"
-                : judge.status === "running"
+                : isRunning
                   ? "Scoring responses"
                   : "Scoring failed"}
             </div>
@@ -3315,9 +3370,9 @@ function JudgePanel({
             <div className="font-mono text-xs tabular-nums text-zinc-500">
               {judge.status}
             </div>
-            {judge.status === "running" ? (
+            {isRunning ? (
               <Loader2
-                className="h-3.5 w-3.5 animate-spin text-[#5865F2]"
+                className="h-3.5 w-3.5 animate-spin text-emerald-600 dark:text-emerald-400"
                 aria-hidden="true"
               />
             ) : null}
