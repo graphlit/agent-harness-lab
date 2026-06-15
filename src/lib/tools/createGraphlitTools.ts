@@ -3,6 +3,7 @@ import {
   createAnalyzePromptTool,
   createCountContentsTool,
   createInspectContentTool,
+  createInspectPageTool,
   createListResourcesTool,
   createReadResourceTool,
   createRetrieveContentsTool,
@@ -12,7 +13,6 @@ import {
 } from "@graphlit/agent-tools";
 
 import type { LabGraphlitTool } from "@/lib/tools/types";
-import { withUrlInspectContent } from "@/lib/tools/inspectContentUrl";
 import { withNormalizedAnalyzePromptTool } from "@/lib/tools/normalizeAnalyzePrompt";
 import { toLabGraphlitTool } from "@/lib/tools/types";
 
@@ -32,12 +32,12 @@ export function createGraphlitTools(client: Graphlit): LabGraphlitTool[] {
       maxLimit: 25,
       maxTextLength: 3_500,
     })),
-    withUrlInspectContent(
-      toLabGraphlitTool(createInspectContentTool(client, {
-        maxTextLength: 10_000,
-      })),
-      client,
-    ),
+    toLabGraphlitTool(createInspectContentTool(client, {
+      maxTextLength: 10_000,
+    })),
+    toLabGraphlitTool(createInspectPageTool(client, {
+      maxTextLength: 10_000,
+    })),
     toLabGraphlitTool(createCountContentsTool(client)),
     toLabGraphlitTool(createListResourcesTool(client, {
       allowedKinds: READ_ONLY_RESOURCE_KINDS,

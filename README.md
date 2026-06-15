@@ -32,8 +32,9 @@ All lanes receive the same read-only Graphlit-backed tool surface:
 - `analyze_prompt` - required first call for per-turn routing and evidence planning.
 - `retrieve_contents`
 - `inspect_content` - inspect retrieved Graphlit content by `id` or
-  `contents://...` `resourceUri`; for normal public web pages, pass `uri` and
-  the lab will ingest or reuse the URL before inspection.
+  `contents://...` `resourceUri`.
+- `inspect_page` - inspect a public web page URL as Markdown without ingesting
+  it into Graphlit.
 - `count_contents`
 - `list_resources`
 - `read_resource`
@@ -41,10 +42,8 @@ All lanes receive the same read-only Graphlit-backed tool surface:
 - `web_map`
 
 The composer can ingest files or URLs as shared setup context before a run.
-Agent lanes cannot delete, enrich, or broadly mutate project content during
-comparison. The narrow exception is `inspect_content({ uri })`: for URL source
-inspection, the lab may ingest or reuse that URL in Graphlit so the lane can
-inspect its markdown/text.
+Agent lanes cannot ingest, delete, enrich, or mutate project content during
+comparison.
 
 The optimized system prompt is enabled by default. It asks every harness to call `analyze_prompt` first, then follow the returned routing plan for retrieval, web search, inspection, and synthesis. You can turn the optimized prompt off in the UI to compare provider/harness defaults.
 
@@ -63,10 +62,10 @@ Graphlit project, not abilities granted to a single lane:
   comparison run.
 
 That means the comparison stays fair: every lane sees the same project context
-and the same constrained Graphlit agent tools. During a benchmark turn, lanes
-can retrieve, inspect, count, list, read, search, and map through those tools.
-URL inspection may add the inspected URL as Graphlit content; lanes otherwise
-cannot add, delete, enrich, or mutate project content.
+and the same read-only Graphlit agent tools. During a benchmark turn, lanes can
+retrieve, inspect content, inspect public pages, count, list, read, search, and
+map through those tools, but they cannot add, delete, enrich, or mutate project
+content.
 
 Uploaded files and ingested URLs are persisted in the configured Graphlit
 project until you manage or delete them in Graphlit. Resetting the lab clears the

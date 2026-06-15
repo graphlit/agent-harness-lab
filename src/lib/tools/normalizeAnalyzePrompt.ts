@@ -49,6 +49,7 @@ type AnalyzeConstraintType =
 type AnalyzeNextStepTool =
   | "retrieve_contents"
   | "inspect_content"
+  | "inspect_page"
   | "web_search"
   | "web_map"
   | "read_resource"
@@ -119,6 +120,7 @@ const LONG_FORM_RESEARCH_FORMAT_INSTRUCTION =
 const NEXT_STEP_TOOLS = new Set<AnalyzeNextStepTool>([
   "retrieve_contents",
   "inspect_content",
+  "inspect_page",
   "web_search",
   "web_map",
   "read_resource",
@@ -198,12 +200,12 @@ function nextStepForEvidenceStep(
     case "inspect_known_content":
       if (isUrl(step.queryOrTarget)) {
         return {
-          tool: "inspect_content",
+          tool: "inspect_page",
           parameters: {
-            uri: step.queryOrTarget,
-            mode: "markdown",
+            url: step.queryOrTarget,
+            maxTextLength: 10_000,
           },
-          reason: `${step.reason} The URL will be ingested or reused as Graphlit content before inspection.`,
+          reason: step.reason,
         };
       }
 
@@ -265,6 +267,40 @@ function normalizeExistingNextStep(
   result: AnalyzePromptResult,
   nextStep: AnalyzeNextStep,
 ): AnalyzeNextStep {
+  if (nextStep.tool === "inspect_content" && isRecord(nextStep.parameters)) {
+    const url =
+      typeof nextStep.parameters.url === "string" &&
+      isUrl(nextStep.parameters.url)
+        ? nextStep.parameters.url
+        : typeof nextStep.parameters.uri === "string" &&
+            isUrl(nextStep.parameters.uri)
+          ? nextStep.parameters.uri
+          : typeof nextStep.parameters.resourceUri === "string" &&
+              isUrl(nextStep.parameters.resourceUri)
+            ? nextStep.parameters.resourceUri
+            : typeof nextStep.parameters.id === "string" &&
+                isUrl(nextStep.parameters.id)
+              ? nextStep.parameters.id
+              : undefined;
+
+    if (url) {
+      return {
+        tool: "inspect_page",
+        parameters: {
+          url,
+          maxTextLength:
+            typeof nextStep.parameters.maxTextLength === "number"
+              ? nextStep.parameters.maxTextLength
+              : 10_000,
+          range: isRecord(nextStep.parameters.range)
+            ? nextStep.parameters.range
+            : undefined,
+        },
+        reason: nextStep.reason,
+      };
+    }
+  }
+
   if (nextStep.tool !== "web_search") {
     return nextStep;
   }

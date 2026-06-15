@@ -36,6 +36,11 @@ type InspectResultLike = {
   text?: string;
 };
 
+type InspectPageResultLike = {
+  url?: string;
+  text?: string;
+};
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -449,6 +454,21 @@ export class LaneRunRecorder {
           id: value.id ?? this.sources.get(key)?.id,
           resourceUri: key,
           name: value.name ?? this.sources.get(key)?.name,
+          text: value.text ?? this.sources.get(key)?.text,
+          inspected: true,
+        });
+      }
+    }
+
+    if (toolName === "inspect_page") {
+      const value = output as InspectPageResultLike;
+      const key = value.url;
+
+      if (key) {
+        this.sources.set(key, {
+          ...this.sources.get(key),
+          resourceUri: key,
+          name: this.sources.get(key)?.name ?? key,
           text: value.text ?? this.sources.get(key)?.text,
           inspected: true,
         });
