@@ -19,10 +19,84 @@ import type {
 import { summarizeJson } from "@/lib/utils";
 
 const ANONYMOUS_IDS = ["A", "B", "C", "D", "E", "F", "G", "H"] as const;
-const MAX_JUDGE_FINAL_ANSWER_CHARS = 100_000;
-const MAX_JUDGE_TOOL_OUTPUT_CHARS = 12_000;
-const MAX_JUDGE_SOURCE_TEXT_CHARS = 12_000;
-const MAX_JUDGE_RESULT_TEXT_CHARS = 2_000;
+const MAX_JUDGE_TOTAL_LANE_CONTEXT_CHARS = 600_000;
+const MAX_JUDGE_FINAL_ANSWER_CHARS = 60_000;
+const MIN_JUDGE_FINAL_ANSWER_CHARS = 4_000;
+const MAX_JUDGE_TOOL_ARGUMENT_CHARS = 2_000;
+const MAX_JUDGE_TOOL_OUTPUT_CHARS = 8_000;
+const MAX_JUDGE_SOURCE_TEXT_CHARS = 8_000;
+const MAX_JUDGE_RESULT_TEXT_CHARS = 1_500;
+const MAX_JUDGE_SEARCH_RESULT_COUNT = 10;
+const MAX_JUDGE_URI_CHARS = 800;
+
+type JudgeToolCallInput = {
+  name: string;
+  arguments?: unknown;
+  output?: unknown;
+  durationMs?: number;
+  error?: string;
+};
+
+type JudgeSourceInput = {
+  resourceUri: string;
+  name?: string;
+  text?: string;
+  relevance: number | null;
+  inspected: boolean;
+};
+
+type JudgeLaneInput = {
+  anonymousId: string;
+  friendlyName: string;
+  finalAnswer: string;
+  toolCallCount: number;
+  toolCalls: JudgeToolCallInput[];
+  sourceCount: number;
+  sources: JudgeSourceInput[];
+  durationMs?: number;
+};
+
+type JudgeLaneCompactionBudget = {
+  finalAnswerChars: number;
+  toolArgumentChars: number;
+  toolOutputChars: number;
+  sourceTextChars: number;
+  searchResultTextChars: number;
+};
+
+type JudgeLaneCompactionStats = {
+  anonymousId: string;
+  laneId: LaneId;
+  friendlyName: string;
+  budgetChars: number;
+  compactedChars: number;
+  finalAnswerChars: number;
+  finalAnswerMaxChars: number;
+  finalAnswerTruncated: boolean;
+  toolCalls: number;
+  toolOutputMaxChars: number;
+  toolOutputsWithContent: number;
+  toolOutputsLikelyTruncated: number;
+  sources: number;
+  sourceTextMaxChars: number;
+  sourceTextsWithContent: number;
+  sourceTextsTruncated: number;
+  searchResultTextMaxChars: number;
+  fitScale: number;
+  overBudget: boolean;
+};
+
+type JudgeCoverageSummary = {
+  complete: boolean;
+  expectedAnonymousIds: string[];
+  scoredAnonymousIds: string[];
+  missingAnonymousIds: string[];
+  missingLaneIds: LaneId[];
+  missingLaneNames: string[];
+  extraAnonymousIds: string[];
+  expectedLaneCount: number;
+  scoredLaneCount: number;
+};
 
 function deterministicShuffle<T>(items: T[], seed: string): T[] {
   const values = [...items];
@@ -72,6 +146,7 @@ function buildJudgePrompt(): string {
     "Search result verbosity is a provider artifact, not an agent quality signal. A lane with shorter snippets can score as highly as a lane with longer snippets when its final answer stays within the facts present in those snippets.",
     "Do not write that a lane failed to retrieve detailed snippets, lacked rich snippets, used empty video links, or had basic search results as a weakness unless the lane chose irrelevant queries, ignored available relevant evidence, or the final answer depended on facts not visible in its evidence.",
     "When evidence is thin, phrase the weakness as answer-fidelity risk: identify which final-answer claims are not visible in the provided tool responses or source traces.",
+    "Some trace fields may be clipped to fit laneContextBudget. Treat clipped evidence as unavailable for validating claims, but do not treat clipping itself as a lane failure or a reason to omit the lane from scoring.",
     "Do not reward a lane for receiving verbose search snippets if another lane retrieved equivalent answer-critical facts in shorter form.",
     "Score retrievalUse based on relevant tool selection, query intent, and whether the lane used the evidence it received; do not score it by raw snippet length or result verbosity.",
     "Score sourceInspection based on whether the lane inspected or used available source-level evidence when the answer required it; a short search snippet is not itself a source-inspection failure.",
@@ -95,8 +170,14 @@ function buildJudgePrompt(): string {
   ].join(" ");
 }
 
-function logJudgeRunner(phase: string, details?: Record<string, unknown>): void {
-  console.info(`[agent-harness-lab/judge] ${phase}`, details ?? {});
+function logJudgeRunner(
+  phase: string,
+  details?: Record<string, unknown>,
+): void {
+  console.info(
+    `[agent-harness-lab/judge] ${phase}`,
+    JSON.stringify(details ?? {}),
+  );
 }
 
 function clipText(value: unknown, maxLength: number): string | undefined {
@@ -104,13 +185,51 @@ function clipText(value: unknown, maxLength: number): string | undefined {
     return undefined;
   }
 
-  return value.length <= maxLength
-    ? value
-    : `${value.slice(0, maxLength)}\n...[truncated ${value.length - maxLength} chars]`;
+  if (maxLength <= 0) {
+    return value.length > 0 ? "" : value;
+  }
+
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  const suffix = "\n...[truncated]";
+
+  if (maxLength <= suffix.length) {
+    return value.slice(0, maxLength);
+  }
+
+  return `${value.slice(0, maxLength - suffix.length)}${suffix}`;
 }
 
-function compactSearchLikeOutput(output: unknown): unknown {
+function jsonCharLength(value: unknown): number {
+  try {
+    return JSON.stringify(value)?.length ?? 0;
+  } catch {
+    return summarizeJson(value).length;
+  }
+}
+
+function compactJsonValue(value: unknown, maxLength: number): unknown {
+  if (value === undefined || maxLength <= 0) {
+    return undefined;
+  }
+
+  return jsonCharLength(value) <= maxLength
+    ? value
+    : clipText(summarizeJson(value, maxLength), maxLength);
+}
+
+function compactSearchLikeOutput(
+  output: unknown,
+  maxLength: number,
+  maxResultTextLength: number,
+): unknown {
   if (!output || typeof output !== "object" || Array.isArray(output)) {
+    return undefined;
+  }
+
+  if (maxLength <= 0) {
     return undefined;
   }
 
@@ -120,15 +239,34 @@ function compactSearchLikeOutput(output: unknown): unknown {
     results?: unknown;
   };
 
-  if (!Array.isArray(value.results)) {
+  const results = value.results;
+
+  if (!Array.isArray(results)) {
     return undefined;
   }
 
-  return {
-    query: typeof value.query === "string" ? value.query : undefined,
+  const maxResultCount =
+    maxLength >= 6_000
+      ? MAX_JUDGE_SEARCH_RESULT_COUNT
+      : maxLength >= 2_500
+        ? 5
+        : 3;
+  const resultTextLengths = [
+    maxResultTextLength,
+    Math.min(maxResultTextLength, 800),
+    Math.min(maxResultTextLength, 400),
+    Math.min(maxResultTextLength, 160),
+    0,
+  ].filter(
+    (length, index, values) => length >= 0 && values.indexOf(length) === index,
+  );
+
+  const build = (resultTextLength: number) => ({
+    query: clipText(value.query, 500),
     searchService:
       typeof value.searchService === "string" ? value.searchService : undefined,
-    results: value.results.slice(0, 10).map((item) => {
+    resultCount: results.length,
+    results: results.slice(0, maxResultCount).map((item) => {
       if (!item || typeof item !== "object" || Array.isArray(item)) {
         return item;
       }
@@ -136,47 +274,125 @@ function compactSearchLikeOutput(output: unknown): unknown {
       const result = item as Record<string, unknown>;
 
       return {
-        title: result.title,
-        uri: result.uri,
-        text: clipText(result.text, MAX_JUDGE_RESULT_TEXT_CHARS),
+        title: clipText(result.title, 240),
+        uri: clipText(result.uri, MAX_JUDGE_URI_CHARS),
+        text: clipText(result.text, resultTextLength),
         score: result.score ?? null,
       };
     }),
-  };
-}
+  });
 
-function compactToolOutput(call: ToolCallTrace): unknown {
-  if (call.output === undefined) {
-    return call.outputSummary;
+  for (const resultTextLength of resultTextLengths) {
+    const compact = build(resultTextLength);
+
+    if (jsonCharLength(compact) <= maxLength) {
+      return compact;
+    }
   }
 
-  const searchLike = compactSearchLikeOutput(call.output);
+  return clipText(summarizeJson(build(0), maxLength), maxLength);
+}
+
+function compactToolOutput(
+  call: ToolCallTrace,
+  maxLength: number,
+  maxResultTextLength: number,
+): unknown {
+  if (maxLength <= 0) {
+    return compactJsonValue(call.outputSummary, 240);
+  }
+
+  if (call.output === undefined) {
+    return compactJsonValue(call.outputSummary, maxLength);
+  }
+
+  const searchLike = compactSearchLikeOutput(
+    call.output,
+    maxLength,
+    maxResultTextLength,
+  );
 
   if (searchLike) {
     return searchLike;
   }
 
-  return summarizeJson(call.output, MAX_JUDGE_TOOL_OUTPUT_CHARS);
+  return compactJsonValue(call.output, maxLength);
 }
 
-function compactLaneResult(result: LaneRunResult, anonymousId: string) {
+function laneBudgetForCount(laneCount: number): number {
+  return Math.floor(
+    MAX_JUDGE_TOTAL_LANE_CONTEXT_CHARS / Math.max(1, laneCount),
+  );
+}
+
+function buildLaneCompactionBudget(
+  result: LaneRunResult,
+  laneBudgetChars: number,
+  scale: number,
+): JudgeLaneCompactionBudget {
+  const toolCallCount = Math.max(1, result.toolCalls.length);
+  const sourceCount = Math.max(1, result.sources.length);
+  const scaledBudget = Math.max(0, Math.floor(laneBudgetChars * scale));
+  const toolOutputChars = Math.floor(
+    Math.min(
+      MAX_JUDGE_TOOL_OUTPUT_CHARS,
+      (scaledBudget * 0.35) / toolCallCount,
+    ),
+  );
+  const sourceTextChars = Math.floor(
+    Math.min(MAX_JUDGE_SOURCE_TEXT_CHARS, (scaledBudget * 0.2) / sourceCount),
+  );
+
+  return {
+    finalAnswerChars: Math.floor(
+      Math.min(
+        MAX_JUDGE_FINAL_ANSWER_CHARS,
+        Math.max(MIN_JUDGE_FINAL_ANSWER_CHARS, scaledBudget * 0.4),
+      ),
+    ),
+    toolArgumentChars: Math.floor(
+      Math.min(
+        MAX_JUDGE_TOOL_ARGUMENT_CHARS,
+        (scaledBudget * 0.05) / toolCallCount,
+      ),
+    ),
+    toolOutputChars,
+    sourceTextChars,
+    searchResultTextChars: Math.floor(
+      Math.min(MAX_JUDGE_RESULT_TEXT_CHARS, Math.max(0, toolOutputChars / 4)),
+    ),
+  };
+}
+
+function buildCompactLaneResult(
+  result: LaneRunResult,
+  anonymousId: string,
+  budget: JudgeLaneCompactionBudget,
+): JudgeLaneInput {
   const friendlyName = LANE_LABELS[result.laneId];
 
   return {
     anonymousId,
     friendlyName,
-    finalAnswer: clipText(result.finalAnswer, MAX_JUDGE_FINAL_ANSWER_CHARS),
+    finalAnswer: clipText(result.finalAnswer, budget.finalAnswerChars) ?? "",
+    toolCallCount: result.toolCalls.length,
     toolCalls: result.toolCalls.map((call) => ({
       name: call.name,
-      arguments: call.arguments,
-      output: compactToolOutput(call),
+      arguments: compactJsonValue(call.arguments, budget.toolArgumentChars),
+      output: compactToolOutput(
+        call,
+        budget.toolOutputChars,
+        budget.searchResultTextChars,
+      ),
       durationMs: call.durationMs,
       error: call.error,
     })),
+    sourceCount: result.sources.length,
     sources: result.sources.map((source) => ({
-      resourceUri: source.resourceUri,
-      name: source.name,
-      text: clipText(source.text, MAX_JUDGE_SOURCE_TEXT_CHARS),
+      resourceUri:
+        clipText(source.resourceUri, MAX_JUDGE_URI_CHARS) ?? source.resourceUri,
+      name: clipText(source.name, 300),
+      text: clipText(source.text, budget.sourceTextChars),
       relevance: source.relevance ?? null,
       inspected: source.inspected ?? false,
     })),
@@ -184,23 +400,120 @@ function compactLaneResult(result: LaneRunResult, anonymousId: string) {
   };
 }
 
-function validateJudgeCoverage(
+function compactLaneResult(
+  result: LaneRunResult,
+  anonymousId: string,
+  laneBudgetChars: number,
+): { lane: JudgeLaneInput; stats: JudgeLaneCompactionStats } {
+  const fitScales = [1, 0.75, 0.5, 0.33, 0.2, 0.1, 0.05];
+  let selectedLane: JudgeLaneInput | undefined;
+  let selectedBudget: JudgeLaneCompactionBudget | undefined;
+  let selectedChars = Number.POSITIVE_INFINITY;
+  let selectedScale = fitScales[fitScales.length - 1] ?? 0.05;
+
+  for (const scale of fitScales) {
+    const budget = buildLaneCompactionBudget(result, laneBudgetChars, scale);
+    const lane = buildCompactLaneResult(result, anonymousId, budget);
+    const compactedChars = jsonCharLength(lane);
+
+    selectedLane = lane;
+    selectedBudget = budget;
+    selectedChars = compactedChars;
+    selectedScale = scale;
+
+    if (compactedChars <= laneBudgetChars) {
+      break;
+    }
+  }
+
+  if (!selectedLane || !selectedBudget) {
+    throw new Error("Failed to compact judge lane input.");
+  }
+
+  const toolOutputsWithContent = result.toolCalls.filter(
+    (call) => call.output !== undefined || call.outputSummary !== undefined,
+  ).length;
+  const toolOutputsLikelyTruncated = result.toolCalls.filter((call) => {
+    const value = call.output ?? call.outputSummary;
+
+    return (
+      value !== undefined &&
+      jsonCharLength(value) > selectedBudget.toolOutputChars
+    );
+  }).length;
+  const sourceTextsWithContent = result.sources.filter(
+    (source) => typeof source.text === "string" && source.text.length > 0,
+  ).length;
+  const sourceTextsTruncated = result.sources.filter(
+    (source) =>
+      typeof source.text === "string" &&
+      source.text.length > selectedBudget.sourceTextChars,
+  ).length;
+
+  return {
+    lane: selectedLane,
+    stats: {
+      anonymousId,
+      laneId: result.laneId,
+      friendlyName: LANE_LABELS[result.laneId],
+      budgetChars: laneBudgetChars,
+      compactedChars: selectedChars,
+      finalAnswerChars: selectedLane.finalAnswer.length,
+      finalAnswerMaxChars: selectedBudget.finalAnswerChars,
+      finalAnswerTruncated:
+        result.finalAnswer.length > selectedBudget.finalAnswerChars,
+      toolCalls: result.toolCalls.length,
+      toolOutputMaxChars: selectedBudget.toolOutputChars,
+      toolOutputsWithContent,
+      toolOutputsLikelyTruncated,
+      sources: result.sources.length,
+      sourceTextMaxChars: selectedBudget.sourceTextChars,
+      sourceTextsWithContent,
+      sourceTextsTruncated,
+      searchResultTextMaxChars: selectedBudget.searchResultTextChars,
+      fitScale: selectedScale,
+      overBudget: selectedChars > laneBudgetChars,
+    },
+  };
+}
+
+function summarizeJudgeCoverage(
   parsed: ParsedJudgeResult,
   ordered: LaneRunResult[],
   anonymousToLane: Map<string, LaneId>,
-): void {
+): JudgeCoverageSummary {
   const expected = new Set(
     ordered.map((_result, index) => anonymousIdForIndex(index)),
   );
   const actual = new Set(parsed.lanes.map((lane) => lane.anonymousId));
-  const missing = [...expected].filter((anonymousId) => !actual.has(anonymousId));
+  const missing = [...expected].filter(
+    (anonymousId) => !actual.has(anonymousId),
+  );
   const extra = [...actual].filter((anonymousId) => !expected.has(anonymousId));
+  const missingLaneIds = missing
+    .map((anonymousId) => anonymousToLane.get(anonymousId))
+    .filter((laneId): laneId is LaneId => Boolean(laneId));
+  const missingLaneNames = missingLaneIds.map((laneId) => LANE_LABELS[laneId]);
 
-  if (missing.length > 0 || extra.length > 0 || actual.size !== expected.size) {
-    const missingNames = missing
-      .map((anonymousId) => anonymousToLane.get(anonymousId))
-      .filter((laneId): laneId is LaneId => Boolean(laneId))
-      .map((laneId) => LANE_LABELS[laneId]);
+  return {
+    complete:
+      missing.length === 0 &&
+      extra.length === 0 &&
+      actual.size === expected.size,
+    expectedAnonymousIds: [...expected],
+    scoredAnonymousIds: parsed.lanes.map((lane) => lane.anonymousId),
+    missingAnonymousIds: missing,
+    missingLaneIds,
+    missingLaneNames,
+    extraAnonymousIds: extra,
+    expectedLaneCount: expected.size,
+    scoredLaneCount: parsed.lanes.length,
+  };
+}
+
+function validateJudgeCoverage(coverage: JudgeCoverageSummary): void {
+  if (!coverage.complete) {
+    const missingNames = coverage.missingLaneNames;
 
     throw new Error(
       [
@@ -208,8 +521,10 @@ function validateJudgeCoverage(
         missingNames.length
           ? `Missing completed lanes: ${missingNames.join(", ")}.`
           : undefined,
-        extra.length ? `Unexpected anonymous IDs: ${extra.join(", ")}.` : undefined,
-        `Expected ${expected.size} scored lanes, received ${parsed.lanes.length}.`,
+        coverage.extraAnonymousIds.length
+          ? `Unexpected anonymous IDs: ${coverage.extraAnonymousIds.join(", ")}.`
+          : undefined,
+        `Expected ${coverage.expectedLaneCount} scored lanes, received ${coverage.scoredLaneCount}.`,
       ]
         .filter(Boolean)
         .join(" "),
@@ -280,6 +595,11 @@ export async function runJudge(options: {
     laneToAnonymous.set(result.laneId, anonymousId);
   });
 
+  const laneBudgetChars = laneBudgetForCount(ordered.length);
+  const compactedLanes = ordered.map((result, index) =>
+    compactLaneResult(result, anonymousIdForIndex(index), laneBudgetChars),
+  );
+
   const judgeInput = {
     prompt: options.prompt,
     rubricVersion: JUDGE_RUBRIC_VERSION,
@@ -291,9 +611,11 @@ export async function runJudge(options: {
       anonymousId: anonymousIdForIndex(index),
       friendlyName: LANE_LABELS[result.laneId],
     })),
-    lanes: ordered.map((result, index) =>
-      compactLaneResult(result, anonymousIdForIndex(index)),
-    ),
+    laneContextBudget: {
+      totalLaneBudgetChars: MAX_JUDGE_TOTAL_LANE_CONTEXT_CHARS,
+      perLaneBudgetChars: laneBudgetChars,
+    },
+    lanes: compactedLanes.map(({ lane }) => lane),
     failedLanes: options.failed.map((failure) => ({
       anonymousId: laneToAnonymous.get(failure.laneId) ?? null,
       friendlyName: LANE_LABELS[failure.laneId],
@@ -306,6 +628,7 @@ export async function runJudge(options: {
     runId: options.runId,
     expectedLaneCount: ordered.length,
     inputChars: judgeInputJson.length,
+    laneBudgetChars,
     lanes: ordered.map((result, index) => ({
       anonymousId: anonymousIdForIndex(index),
       laneId: result.laneId,
@@ -314,6 +637,7 @@ export async function runJudge(options: {
       toolCalls: result.toolCalls.length,
       sources: result.sources.length,
     })),
+    compactedLanes: compactedLanes.map(({ stats }) => stats),
   });
 
   const client = createGraphlitClient();
@@ -335,13 +659,33 @@ export async function runJudge(options: {
     (item) => item?.name === "score_agent_harness_run",
   )?.value;
 
+  logJudgeRunner("extract.completed", {
+    runId: options.runId,
+    extractItemCount: response.extractText?.length ?? 0,
+    extractItems: response.extractText?.map((item) => ({
+      name: item?.name,
+      valueChars: item?.value?.length ?? 0,
+    })),
+    selectedValueChars: value?.length ?? 0,
+  });
+
   if (!value) {
     throw new Error("Judge did not return a score_agent_harness_run value.");
   }
 
   const parsed = JudgeResultSchema.parse(JSON.parse(value));
+  const coverage = summarizeJudgeCoverage(parsed, ordered, anonymousToLane);
 
-  validateJudgeCoverage(parsed, ordered, anonymousToLane);
+  if (!coverage.complete) {
+    logJudgeRunner("coverage.failed", {
+      runId: options.runId,
+      winnerAnonymousId: parsed.winnerAnonymousId,
+      pairwiseNotes: parsed.pairwiseNotes.length,
+      ...coverage,
+    });
+  }
+
+  validateJudgeCoverage(coverage);
 
   logJudgeRunner("result.parsed", {
     runId: options.runId,

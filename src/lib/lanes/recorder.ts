@@ -41,8 +41,70 @@ type InspectPageResultLike = {
   text?: string;
 };
 
+const MAX_PROVIDER_RAW_EVENTS = 60;
+const MAX_PROVIDER_RAW_EVENT_CHARS = 6_000;
+const MAX_TOOL_ARGUMENT_TRACE_CHARS = 2_000;
+const MAX_TOOL_OUTPUT_TRACE_CHARS = 8_000;
+const MAX_SOURCE_TRACE_TEXT_CHARS = 6_000;
+const MAX_SOURCE_TRACE_NAME_CHARS = 300;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function jsonCharLength(value: unknown): number {
+  try {
+    return JSON.stringify(value)?.length ?? 0;
+  } catch {
+    return Number.POSITIVE_INFINITY;
+  }
+}
+
+function clipString(value: string, maxLength: number): string {
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  const suffix = "\n...[truncated]";
+
+  if (maxLength <= suffix.length) {
+    return value.slice(0, maxLength);
+  }
+
+  return `${value.slice(0, maxLength - suffix.length)}${suffix}`;
+}
+
+function clipOptionalString(
+  value: string | undefined,
+  maxLength: number,
+): string | undefined {
+  return typeof value === "string" ? clipString(value, maxLength) : value;
+}
+
+function compactTraceValue(value: unknown, maxLength: number): unknown {
+  if (value === undefined || value === null) {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    return clipString(value, maxLength);
+  }
+
+  const measuredChars = jsonCharLength(value);
+
+  if (measuredChars <= maxLength) {
+    return value;
+  }
+
+  const summary = summarizeJson(value, maxLength);
+
+  return {
+    type: "truncated_json",
+    originalChars: Number.isFinite(measuredChars)
+      ? measuredChars
+      : summary.length,
+    summary,
+  };
 }
 
 function finiteNumber(value: unknown): number | undefined {
@@ -144,6 +206,8 @@ export class LaneRunRecorder {
   private readonly toolCalls = new Map<string, ToolCallTrace>();
   private readonly sources = new Map<string, SourceTrace>();
   private readonly rawEvents: unknown[] = [];
+  private droppedProviderRawEvents = 0;
+  private storedProviderRawEvents = 0;
   private session: LaneSessionState = {};
   private finalAnswer = "";
   private tokenUsage: TokenUsageTrace | undefined;
@@ -182,7 +246,13 @@ export class LaneRunRecorder {
   }
 
   recordRaw(event: unknown): void {
-    this.rawEvents.push(event);
+    if (this.storedProviderRawEvents >= MAX_PROVIDER_RAW_EVENTS) {
+      this.droppedProviderRawEvents += 1;
+      return;
+    }
+
+    this.storedProviderRawEvents += 1;
+    this.rawEvents.push(compactTraceValue(event, MAX_PROVIDER_RAW_EVENT_CHARS));
   }
 
   recordPhase(phase: string, details: Record<string, unknown> = {}): void {
@@ -261,7 +331,7 @@ export class LaneRunRecorder {
       id,
       name,
       status: "started",
-      arguments: args,
+      arguments: compactTraceValue(args, MAX_TOOL_ARGUMENT_TRACE_CHARS),
       outputSummary: summarizeJson(args, 180),
       startedAt: nowIso(),
     };
@@ -271,7 +341,7 @@ export class LaneRunRecorder {
       this.createTelemetryEvent("tool.started", call.startedAt, {
         toolCallId: id,
         toolName: name,
-        arguments: args,
+        arguments: call.arguments,
       }),
     );
     await this.emit({
@@ -285,9 +355,13 @@ export class LaneRunRecorder {
     return call;
   }
 
-  async recordToolCompleted(id: string, output: unknown): Promise<ToolCallTrace> {
+  async recordToolCompleted(
+    id: string,
+    output: unknown,
+  ): Promise<ToolCallTrace> {
     const existing = this.toolCalls.get(id);
     const completedAt = nowIso();
+    this.captureSources(output, existing?.name ?? "tool");
     const call: ToolCallTrace = {
       ...(existing ?? {
         id,
@@ -296,14 +370,13 @@ export class LaneRunRecorder {
         status: "started" as const,
       }),
       status: "completed",
-      output,
+      output: compactTraceValue(output, MAX_TOOL_OUTPUT_TRACE_CHARS),
       outputSummary: summarizeJson(output),
       completedAt,
       durationMs: existing ? elapsedMs(existing.startedAt, completedAt) : 0,
     };
 
     this.toolCalls.set(id, call);
-    this.captureSources(output, call.name);
     this.rawEvents.push(
       this.createTelemetryEvent("tool.completed", completedAt, {
         toolCallId: id,
@@ -363,8 +436,22 @@ export class LaneRunRecorder {
   result(error?: string): LaneRunResult {
     const completedAt = nowIso();
     const durationMs = elapsedMs(this.startedAt, completedAt);
+    const providerRawEventsTruncated =
+      this.droppedProviderRawEvents > 0
+        ? [
+            this.createTelemetryEvent(
+              "provider_raw_events.truncated",
+              completedAt,
+              {
+                storedProviderRawEvents: this.storedProviderRawEvents,
+                droppedProviderRawEvents: this.droppedProviderRawEvents,
+              },
+            ),
+          ]
+        : [];
     const rawEvents = [
       ...this.rawEvents,
+      ...providerRawEventsTruncated,
       this.createTelemetryEvent(
         error ? "lane.failed" : "lane.completed",
         completedAt,
@@ -374,7 +461,10 @@ export class LaneRunRecorder {
           toolCallCount: this.toolCalls.size,
           sourceCount: this.sources.size,
           tokenUsage: this.tokenUsage,
-          eventCount: this.rawEvents.length + 1,
+          eventCount:
+            this.rawEvents.length + providerRawEventsTruncated.length + 1,
+          storedProviderRawEvents: this.storedProviderRawEvents,
+          droppedProviderRawEvents: this.droppedProviderRawEvents,
           error,
         },
       ),
@@ -440,8 +530,8 @@ export class LaneRunRecorder {
         this.sources.set(key, {
           id: result.id,
           resourceUri: key,
-          name: result.name,
-          text: result.text,
+          name: clipOptionalString(result.name, MAX_SOURCE_TRACE_NAME_CHARS),
+          text: clipOptionalString(result.text, MAX_SOURCE_TRACE_TEXT_CHARS),
           relevance: result.relevance ?? null,
           inspected: this.sources.get(key)?.inspected,
         });
@@ -450,15 +540,20 @@ export class LaneRunRecorder {
 
     if (toolName === "inspect_content") {
       const value = output as InspectResultLike;
-      const key = value.resourceUri ?? (value.id ? `contents://${value.id}` : "");
+      const key =
+        value.resourceUri ?? (value.id ? `contents://${value.id}` : "");
 
       if (key) {
         this.sources.set(key, {
           ...this.sources.get(key),
           id: value.id ?? this.sources.get(key)?.id,
           resourceUri: key,
-          name: value.name ?? this.sources.get(key)?.name,
-          text: value.text ?? this.sources.get(key)?.text,
+          name:
+            clipOptionalString(value.name, MAX_SOURCE_TRACE_NAME_CHARS) ??
+            this.sources.get(key)?.name,
+          text:
+            clipOptionalString(value.text, MAX_SOURCE_TRACE_TEXT_CHARS) ??
+            this.sources.get(key)?.text,
           inspected: true,
         });
       }
@@ -473,7 +568,9 @@ export class LaneRunRecorder {
           ...this.sources.get(key),
           resourceUri: key,
           name: this.sources.get(key)?.name ?? key,
-          text: value.text ?? this.sources.get(key)?.text,
+          text:
+            clipOptionalString(value.text, MAX_SOURCE_TRACE_TEXT_CHARS) ??
+            this.sources.get(key)?.text,
           inspected: true,
         });
       }

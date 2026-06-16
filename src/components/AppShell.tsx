@@ -102,6 +102,10 @@ const LANE_START_TIMEOUT_MS = LONG_RUNNING_TEST_TIMEOUT_MS;
 const JUDGE_CLIENT_TIMEOUT_MS = LONG_RUNNING_TEST_TIMEOUT_MS;
 const PROMPT_TEXTAREA_MIN_ROWS = 2;
 const PROMPT_TEXTAREA_MAX_ROWS = 8;
+const MAX_UI_RAW_EVENTS = 220;
+const MAX_UI_EVENT_VALUE_CHARS = 4_000;
+const MAX_CLIENT_JUDGE_TOOL_OUTPUT_CHARS = 12_000;
+const MAX_CLIENT_JUDGE_SOURCE_TEXT_CHARS = 12_000;
 
 const initialTurnState = (
   turnId: string,
@@ -163,7 +167,8 @@ function resizePromptTextarea(textarea: HTMLTextAreaElement | null): void {
   );
 
   textarea.style.height = `${nextHeight}px`;
-  textarea.style.overflowY = textarea.scrollHeight > maxHeight ? "auto" : "hidden";
+  textarea.style.overflowY =
+    textarea.scrollHeight > maxHeight ? "auto" : "hidden";
 }
 
 type IngestUiStatus = {
@@ -207,7 +212,9 @@ function isIngestApiResult(value: unknown): value is IngestApiResult {
   );
 }
 
-async function readIngestApiResult(response: Response): Promise<IngestApiResult> {
+async function readIngestApiResult(
+  response: Response,
+): Promise<IngestApiResult> {
   const body: unknown = await response.json().catch(() => null);
 
   if (!response.ok) {
@@ -256,10 +263,279 @@ function updateLaneTurn(
   return { ...state, turns };
 }
 
-function withReceivedAt(event: LabRunEvent): LabRunEvent & {
-  receivedAt: string;
-} {
-  return { ...event, receivedAt: new Date().toISOString() };
+function jsonCharLength(value: unknown): number {
+  try {
+    return JSON.stringify(value)?.length ?? 0;
+  } catch {
+    return String(value).length;
+  }
+}
+
+function clipUiString(value: string, maxLength: number): string {
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  const suffix = "\n...[truncated]";
+
+  if (maxLength <= suffix.length) {
+    return value.slice(0, maxLength);
+  }
+
+  return `${value.slice(0, maxLength - suffix.length)}${suffix}`;
+}
+
+function compactUiValue(value: unknown, maxLength: number): unknown {
+  if (value === undefined || value === null) {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    return clipUiString(value, maxLength);
+  }
+
+  const originalChars = jsonCharLength(value);
+
+  if (originalChars <= maxLength) {
+    return value;
+  }
+
+  let summary: string;
+
+  try {
+    summary = JSON.stringify(value, null, 2);
+  } catch {
+    summary = String(value);
+  }
+
+  return {
+    type: "truncated_json",
+    originalChars,
+    summary: clipUiString(summary, maxLength),
+  };
+}
+
+function compactToolCallForEvent(call: ToolCallTrace): Record<string, unknown> {
+  return {
+    id: call.id,
+    name: call.name,
+    status: call.status,
+    arguments: compactUiValue(call.arguments, 1_000),
+    outputSummary: call.outputSummary,
+    outputChars: call.output === undefined ? 0 : jsonCharLength(call.output),
+    durationMs: call.durationMs,
+    error: call.error,
+    startedAt: call.startedAt,
+    completedAt: call.completedAt,
+  };
+}
+
+function laneResultSummary(result: LaneRunResult): Record<string, unknown> {
+  return {
+    laneId: result.laneId,
+    status: result.error ? "failed" : "completed",
+    answerChars: result.finalAnswer.length,
+    toolCalls: result.toolCalls.length,
+    sources: result.sources.length,
+    rawEvents: result.rawEvents.length,
+    durationMs: result.durationMs,
+    tokenUsage: result.tokenUsage?.totalTokens,
+    sessionKeys: result.session ? Object.keys(result.session) : [],
+    error: result.error,
+  };
+}
+
+function compactRunEventForHistory(
+  event: LabRunEvent,
+): Record<string, unknown> {
+  const receivedAt = new Date().toISOString();
+
+  switch (event.type) {
+    case "lane_message_delta":
+    case "lane_message_snapshot":
+    case "lane_reasoning_delta":
+      return {
+        type: event.type,
+        runId: event.runId,
+        turnId: event.turnId,
+        laneId: event.laneId,
+        textChars: event.text.length,
+        receivedAt,
+      };
+    case "tool_call_started":
+    case "tool_call_completed":
+    case "tool_call_failed":
+      return {
+        type: event.type,
+        runId: event.runId,
+        turnId: event.turnId,
+        laneId: event.laneId,
+        call: compactToolCallForEvent(event.call),
+        receivedAt,
+      };
+    case "lane_completed":
+      return {
+        type: event.type,
+        runId: event.runId,
+        turnId: event.turnId,
+        laneId: event.laneId,
+        result: laneResultSummary(event.result),
+        receivedAt,
+      };
+    case "lane_failed":
+      return {
+        type: event.type,
+        runId: event.runId,
+        turnId: event.turnId,
+        laneId: event.laneId,
+        error: event.error,
+        result: event.result ? laneResultSummary(event.result) : undefined,
+        receivedAt,
+      };
+    case "lane_trace":
+      return {
+        type: event.type,
+        runId: event.runId,
+        turnId: event.turnId,
+        laneId: event.laneId,
+        event: compactUiValue(event.event, MAX_UI_EVENT_VALUE_CHARS),
+        receivedAt,
+      };
+    default:
+      return { ...event, receivedAt };
+  }
+}
+
+function hasRecordedEventType(events: unknown[], types: string[]): boolean {
+  return events.some(
+    (event) =>
+      event !== null &&
+      typeof event === "object" &&
+      !Array.isArray(event) &&
+      "type" in event &&
+      typeof event.type === "string" &&
+      types.includes(event.type),
+  );
+}
+
+function shouldStoreRecordedEvent(
+  events: unknown[],
+  event: Record<string, unknown>,
+): boolean {
+  if (
+    event.type === "lane_message_delta" ||
+    event.type === "lane_message_snapshot"
+  ) {
+    return !hasRecordedEventType(events, [
+      "lane_message_delta",
+      "lane_message_snapshot",
+    ]);
+  }
+
+  if (event.type === "lane_reasoning_delta") {
+    return !hasRecordedEventType(events, ["lane_reasoning_delta"]);
+  }
+
+  return true;
+}
+
+function toUiRawEvent(event: unknown): Record<string, unknown> {
+  if (event && typeof event === "object" && !Array.isArray(event)) {
+    return compactUiValue(event, MAX_UI_EVENT_VALUE_CHARS) as Record<
+      string,
+      unknown
+    >;
+  }
+
+  return {
+    type: "raw_event",
+    value: compactUiValue(event, MAX_UI_EVENT_VALUE_CHARS),
+  };
+}
+
+function appendUiRawEvent(events: unknown[], event: unknown): unknown[] {
+  const rawEvent = toUiRawEvent(event);
+
+  if (!shouldStoreRecordedEvent(events, rawEvent)) {
+    return events;
+  }
+
+  if (events.length < MAX_UI_RAW_EVENTS) {
+    return [...events, rawEvent];
+  }
+
+  const last = events[events.length - 1];
+
+  if (
+    last &&
+    typeof last === "object" &&
+    !Array.isArray(last) &&
+    "type" in last &&
+    last.type === "ui_event_log_truncated"
+  ) {
+    const lastRecord = last as Record<string, unknown>;
+    const droppedEvents =
+      typeof lastRecord.droppedEvents === "number"
+        ? lastRecord.droppedEvents + 1
+        : 1;
+
+    return [
+      ...events.slice(0, -1),
+      {
+        ...lastRecord,
+        droppedEvents,
+        lastDroppedType: rawEvent.type,
+        receivedAt: rawEvent.receivedAt,
+      },
+    ];
+  }
+
+  return [
+    ...events.slice(0, MAX_UI_RAW_EVENTS - 1),
+    {
+      type: "ui_event_log_truncated",
+      droppedEvents: 1,
+      lastDroppedType: rawEvent.type,
+      receivedAt: rawEvent.receivedAt,
+    },
+  ];
+}
+
+function compactLaneResultForUi(result: LaneRunResult): LaneRunResult {
+  return {
+    ...result,
+    prompt: "",
+    rawEvents: [],
+    session: undefined,
+  };
+}
+
+function compactToolCallForJudge(call: ToolCallTrace): ToolCallTrace {
+  return {
+    ...call,
+    output: compactUiValue(call.output, MAX_CLIENT_JUDGE_TOOL_OUTPUT_CHARS),
+  };
+}
+
+function compactSourceForJudge(source: SourceTrace): SourceTrace {
+  return {
+    ...source,
+    text:
+      typeof source.text === "string"
+        ? clipUiString(source.text, MAX_CLIENT_JUDGE_SOURCE_TEXT_CHARS)
+        : source.text,
+  };
+}
+
+function compactLaneResultForJudge(result: LaneRunResult): LaneRunResult {
+  return {
+    ...result,
+    prompt: "",
+    toolCalls: result.toolCalls.map(compactToolCallForJudge),
+    sources: result.sources.map(compactSourceForJudge),
+    rawEvents: [],
+    session: undefined,
+  };
 }
 
 function defaultEnabledLanes(bootstrap: BootstrapStatus | null): Set<LaneId> {
@@ -326,10 +602,7 @@ function createLinkedAbortController(
   };
 }
 
-function nextLaneState(
-  state: LaneUiState,
-  event: LabRunEvent,
-): LaneUiState {
+function nextLaneState(state: LaneUiState, event: LabRunEvent): LaneUiState {
   if (!("laneId" in event) || event.laneId !== state.id) {
     return state;
   }
@@ -340,37 +613,37 @@ function nextLaneState(
     return state;
   }
 
-  const recordedEvent = withReceivedAt(event);
+  const recordedEvent = compactRunEventForHistory(event);
 
   switch (event.type) {
     case "lane_started":
       return updateLaneTurn(state, turnId, (turn) => ({
         ...turn,
         status: "running",
-        rawEvents: [...turn.rawEvents, recordedEvent],
+        rawEvents: appendUiRawEvent(turn.rawEvents, recordedEvent),
       }));
     case "lane_trace":
       return updateLaneTurn(state, turnId, (turn) => ({
         ...turn,
-        rawEvents: [...turn.rawEvents, recordedEvent],
+        rawEvents: appendUiRawEvent(turn.rawEvents, recordedEvent),
       }));
     case "lane_message_delta":
       return updateLaneTurn(state, turnId, (turn) => ({
         ...turn,
         answer: `${turn.answer}${event.text}`,
-        rawEvents: [...turn.rawEvents, recordedEvent],
+        rawEvents: appendUiRawEvent(turn.rawEvents, recordedEvent),
       }));
     case "lane_message_snapshot":
       return updateLaneTurn(state, turnId, (turn) => ({
         ...turn,
         answer: event.text,
-        rawEvents: [...turn.rawEvents, recordedEvent],
+        rawEvents: appendUiRawEvent(turn.rawEvents, recordedEvent),
       }));
     case "lane_reasoning_delta":
       return updateLaneTurn(state, turnId, (turn) => ({
         ...turn,
         reasoning: `${turn.reasoning}${event.text}`,
-        rawEvents: [...turn.rawEvents, recordedEvent],
+        rawEvents: appendUiRawEvent(turn.rawEvents, recordedEvent),
       }));
     case "tool_call_started":
       return updateLaneTurn(state, turnId, (turn) => ({
@@ -380,7 +653,7 @@ function nextLaneState(
           ...turn.toolCalls.filter((call) => call.id !== event.call.id),
           event.call,
         ],
-        rawEvents: [...turn.rawEvents, recordedEvent],
+        rawEvents: appendUiRawEvent(turn.rawEvents, recordedEvent),
       }));
     case "tool_call_completed":
     case "tool_call_failed":
@@ -390,9 +663,11 @@ function nextLaneState(
         toolCalls: turn.toolCalls.map((call) =>
           call.id === event.call.id ? event.call : call,
         ),
-        rawEvents: [...turn.rawEvents, recordedEvent],
+        rawEvents: appendUiRawEvent(turn.rawEvents, recordedEvent),
       }));
-    case "lane_completed":
+    case "lane_completed": {
+      const compactResult = compactLaneResultForUi(event.result);
+
       return updateLaneTurn(
         {
           ...state,
@@ -406,16 +681,19 @@ function nextLaneState(
           answer: event.result.finalAnswer || turn.answer,
           sources: event.result.sources,
           toolCalls: event.result.toolCalls,
-          rawEvents: [
-            ...turn.rawEvents,
-            ...event.result.rawEvents,
-            recordedEvent,
-          ],
-          result: event.result,
+          rawEvents: [...event.result.rawEvents, recordedEvent].reduce(
+            appendUiRawEvent,
+            turn.rawEvents,
+          ),
+          result: compactResult,
         }),
       );
+    }
     case "lane_failed": {
       const failureResult = event.result;
+      const compactFailureResult = failureResult
+        ? compactLaneResultForUi(failureResult)
+        : undefined;
 
       return updateLaneTurn(
         failureResult?.session
@@ -437,11 +715,10 @@ function nextLaneState(
           toolCalls: failureResult?.toolCalls ?? turn.toolCalls,
           error: event.error,
           rawEvents: [
-            ...turn.rawEvents,
             ...(failureResult?.rawEvents ?? []),
             recordedEvent,
-          ],
-          result: failureResult ?? turn.result,
+          ].reduce(appendUiRawEvent, turn.rawEvents),
+          result: compactFailureResult ?? turn.result,
         }),
       );
     }
@@ -465,7 +742,9 @@ function statusTone(status: LaneStatus): string {
 }
 
 function isLaneInProgress(status?: LaneStatus): boolean {
-  return status === "queued" || status === "running" || status === "tool_calling";
+  return (
+    status === "queued" || status === "running" || status === "tool_calling"
+  );
 }
 
 function formatElapsedMs(ms: number): string {
@@ -639,9 +918,7 @@ const answerMarkdownComponents: Components = {
       {children}
     </td>
   ),
-  tr: ({ children }) => (
-    <tr className="last:[&>td]:border-b-0">{children}</tr>
-  ),
+  tr: ({ children }) => <tr className="last:[&>td]:border-b-0">{children}</tr>,
   strong: ({ children }) => (
     <strong className="font-semibold text-zinc-950 dark:text-zinc-50">
       {children}
@@ -869,10 +1146,11 @@ function fetchBootstrapStatus(): Promise<BootstrapFetchResult> {
 export function AppShell() {
   const [bootstrap, setBootstrap] = useState<BootstrapStatus | null>(null);
   const [bootstrapError, setBootstrapError] = useState<string | null>(null);
-  const [lanes, setLanes] = useState<Record<LaneId, LaneUiState>>(() =>
-    Object.fromEntries(
-      LANE_IDS.map((id) => [id, initialLaneState(id)]),
-    ) as Record<LaneId, LaneUiState>,
+  const [lanes, setLanes] = useState<Record<LaneId, LaneUiState>>(
+    () =>
+      Object.fromEntries(
+        LANE_IDS.map((id) => [id, initialLaneState(id)]),
+      ) as Record<LaneId, LaneUiState>,
   );
   const [enabledLanes, setEnabledLanes] = useState<Set<LaneId>>(
     () => new Set(DEFAULT_LANES),
@@ -1111,7 +1389,9 @@ export function AppShell() {
 
     const nextIndex = historyIndex - 1;
     setHistoryIndex(nextIndex);
-    setPrompt(nextIndex === -1 ? historyDraft : (promptHistory[nextIndex] ?? ""));
+    setPrompt(
+      nextIndex === -1 ? historyDraft : (promptHistory[nextIndex] ?? ""),
+    );
   }
 
   function applyEvent(event: LabRunEvent, runSequence: number) {
@@ -1182,27 +1462,28 @@ export function AppShell() {
     setIsComposerCollapsed(true);
     setRunLaneIds(new Set([...priorVisibleLaneIds, ...selectedLanes]));
     setJudge({ status: "idle", turnId });
-    setLanes((current) =>
-      Object.fromEntries(
-        LANE_IDS.map((id) => {
-          const lane = current[id];
+    setLanes(
+      (current) =>
+        Object.fromEntries(
+          LANE_IDS.map((id) => {
+            const lane = current[id];
 
-          if (!selectedLaneSet.has(id)) {
-            return [id, lane];
-          }
+            if (!selectedLaneSet.has(id)) {
+              return [id, lane];
+            }
 
-          return [
-            id,
-            {
-              ...lane,
-              turns: [
-                ...lane.turns,
-                initialTurnState(turnId, currentPrompt, "queued"),
-              ],
-            },
-          ];
-        }),
-      ) as Record<LaneId, LaneUiState>,
+            return [
+              id,
+              {
+                ...lane,
+                turns: [
+                  ...lane.turns,
+                  initialTurnState(turnId, currentPrompt, "queued"),
+                ],
+              },
+            ];
+          }),
+        ) as Record<LaneId, LaneUiState>,
     );
 
     type LaneOutcome =
@@ -1247,7 +1528,7 @@ export function AppShell() {
             outcome = {
               status: "completed",
               laneId,
-              result: event.result,
+              result: compactLaneResultForJudge(event.result),
             };
           }
 
@@ -1330,7 +1611,7 @@ export function AppShell() {
           (outcome): outcome is Extract<LaneOutcome, { status: "completed" }> =>
             outcome.status === "completed",
         )
-        .map((outcome) => outcome.result);
+        .map((outcome) => compactLaneResultForJudge(outcome.result));
       const failed = outcomes
         .filter(
           (outcome): outcome is Extract<LaneOutcome, { status: "failed" }> =>
@@ -1409,26 +1690,27 @@ export function AppShell() {
         return;
       }
 
-      setLanes((current) =>
-        Object.fromEntries(
-          LANE_IDS.map((id) => {
-            const lane = current[id];
+      setLanes(
+        (current) =>
+          Object.fromEntries(
+            LANE_IDS.map((id) => {
+              const lane = current[id];
 
-            if (!selectedLaneSet.has(id)) {
-              return [id, lane];
-            }
+              if (!selectedLaneSet.has(id)) {
+                return [id, lane];
+              }
 
-            return [
-              id,
-              updateLaneTurn(lane, turnId, (turn) => ({
-                ...turn,
-                status: "failed",
-                completedAt: turn.completedAt ?? new Date().toISOString(),
-                error: error instanceof Error ? error.message : String(error),
-              })),
-            ];
-          }),
-        ) as Record<LaneId, LaneUiState>,
+              return [
+                id,
+                updateLaneTurn(lane, turnId, (turn) => ({
+                  ...turn,
+                  status: "failed",
+                  completedAt: turn.completedAt ?? new Date().toISOString(),
+                  error: error instanceof Error ? error.message : String(error),
+                })),
+              ];
+            }),
+          ) as Record<LaneId, LaneUiState>,
       );
       setJudge({
         status: "failed",
@@ -1493,12 +1775,8 @@ export function AppShell() {
   }
 
   return (
-    <main
-      className="flex h-[100dvh] w-full flex-col overflow-x-hidden bg-zinc-50 text-zinc-900 transition-colors duration-200 dark:bg-[#09090b] dark:text-zinc-100"
-    >
-      <header
-        className="flex w-full shrink-0 items-center justify-between border-b border-zinc-200 bg-white px-6 py-4 transition-colors duration-200 dark:border-zinc-900 dark:bg-[#09090b]"
-      >
+    <main className="flex h-[100dvh] w-full flex-col overflow-x-hidden bg-zinc-50 text-zinc-900 transition-colors duration-200 dark:bg-[#09090b] dark:text-zinc-100">
+      <header className="flex w-full shrink-0 items-center justify-between border-b border-zinc-200 bg-white px-6 py-4 transition-colors duration-200 dark:border-zinc-900 dark:bg-[#09090b]">
         <div>
           <h1 className="text-md font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
             Graphlit Agent Harness Lab
@@ -1534,9 +1812,7 @@ export function AppShell() {
         </div>
       </header>
 
-      <section
-        className="relative flex min-h-0 w-full flex-1 flex-col overflow-hidden bg-zinc-50 transition-colors duration-200 dark:bg-[#09090b]"
-      >
+      <section className="relative flex min-h-0 w-full flex-1 flex-col overflow-hidden bg-zinc-50 transition-colors duration-200 dark:bg-[#09090b]">
         {!hasLaneContent ? (
           <div className="agent-harness-lanes-scroll flex min-h-0 w-full flex-1 flex-nowrap snap-x snap-mandatory overflow-x-auto overflow-y-hidden md:snap-none">
             <div className="flex h-full w-full shrink-0 snap-center flex-col items-center justify-center border-r border-transparent px-6 pb-40 last:border-r-0 md:flex-1 md:shrink md:border-zinc-200 dark:md:border-zinc-800">
@@ -1588,7 +1864,10 @@ export function AppShell() {
                 />
               ))}
             </div>
-            <JudgePanel judge={judge} onClose={() => setJudge({ status: "idle" })} />
+            <JudgePanel
+              judge={judge}
+              onClose={() => setJudge({ status: "idle" })}
+            />
           </>
         )}
       </section>
@@ -1719,8 +1998,7 @@ function Composer({
   const telemetryText =
     [bootstrapError, bootstrap?.warning, ingestStatus?.message, statusText]
       .filter(Boolean)
-      .join(" ") ||
-    "Ready.";
+      .join(" ") || "Ready.";
   const activePromptText = activePrompt.trim();
   const footerStatusText = activePromptText
     ? judgeStatus === "running"
@@ -1877,9 +2155,7 @@ function Composer({
             label="Effort"
             values={["low", "medium", "high"]}
             selected={reasoningEffort}
-            onSelect={(value) =>
-              setReasoningEffort(value as ReasoningEffort)
-            }
+            onSelect={(value) => setReasoningEffort(value as ReasoningEffort)}
             disabled={isRunning}
           />
           <ProviderPreference
@@ -2203,7 +2479,9 @@ function JudgeSwitch({
         type="button"
         role="switch"
         aria-checked={enabled}
-        aria-label={enabled ? "Use optimized system prompt" : "Use provider defaults"}
+        aria-label={
+          enabled ? "Use optimized system prompt" : "Use provider defaults"
+        }
         className={classNames(
           enabled
             ? "rounded-md border border-zinc-950 bg-zinc-900 px-3 py-1 text-xs font-semibold text-white dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-50"
@@ -2680,7 +2958,10 @@ function eventName(event: unknown): string {
   return isRecord(event.event) ? eventName(event.event) : "";
 }
 
-function eventTimestampMs(event: unknown, turnStartedAt: string): number | null {
+function eventTimestampMs(
+  event: unknown,
+  turnStartedAt: string,
+): number | null {
   if (!isRecord(event)) {
     return null;
   }
@@ -2746,8 +3027,8 @@ function isAnswerEvent(event: unknown): boolean {
   if (
     (event.type === "lane_message_delta" ||
       event.type === "lane_message_snapshot") &&
-    typeof event.text === "string" &&
-    event.text.length > 0
+    ((typeof event.text === "string" && event.text.length > 0) ||
+      (typeof event.textChars === "number" && event.textChars > 0))
   ) {
     return true;
   }
@@ -2770,8 +3051,8 @@ function isThinkingEvent(event: unknown): boolean {
 
   if (
     event.type === "lane_reasoning_delta" &&
-    typeof event.text === "string" &&
-    event.text.length > 0
+    ((typeof event.text === "string" && event.text.length > 0) ||
+      (typeof event.textChars === "number" && event.textChars > 0))
   ) {
     return true;
   }
@@ -2816,7 +3097,9 @@ function thinkingSummaryValue(
   thinkingStart: number | null,
 ): string {
   if (turn.reasoning || thinkingStart !== null) {
-    return thinkingStart === null ? "captured" : `from ${formatElapsedMs(thinkingStart)}`;
+    return thinkingStart === null
+      ? "captured"
+      : `from ${formatElapsedMs(thinkingStart)}`;
   }
 
   if (
@@ -2850,7 +3133,10 @@ function turnEventSummary(
   turn: LaneTurnUiState,
   displayEvents: unknown[],
 ): EventMetric[] {
-  const allEvents = [...turn.rawEvents, ...turnEventSource(turn)];
+  const resultEvents = turn.result?.rawEvents ?? [];
+  const allEvents = resultEvents.length
+    ? [...turn.rawEvents, ...resultEvents]
+    : turn.rawEvents;
   const firstEvent = firstElapsed(
     allEvents,
     turn.startedAt,
@@ -2869,7 +3155,11 @@ function turnEventSummary(
     (total, call) => total + (call.durationMs ?? 0),
     0,
   );
-  const thinkingStart = firstElapsed(allEvents, turn.startedAt, isThinkingEvent);
+  const thinkingStart = firstElapsed(
+    allEvents,
+    turn.startedAt,
+    isThinkingEvent,
+  );
   const thinkingValue = thinkingSummaryValue(turn, thinkingStart);
 
   return [
@@ -2898,7 +3188,8 @@ function turnEventSummary(
     {
       label: "Thinking",
       value: thinkingValue,
-      title: "Reasoning trace timing when exposed. Some providers use reasoning internally without returning a thinking stream.",
+      title:
+        "Reasoning trace timing when exposed. Some providers use reasoning internally without returning a thinking stream.",
     },
     {
       label: "Events",
@@ -3055,7 +3346,11 @@ function toolDisplayName(call: ToolCallTrace): string {
 
 function ToolTimeline({ calls }: { calls: ToolCallTrace[] }) {
   if (!calls.length) {
-    return <div className="font-mono text-xs text-zinc-500 dark:text-zinc-400">No tool calls.</div>;
+    return (
+      <div className="font-mono text-xs text-zinc-500 dark:text-zinc-400">
+        No tool calls.
+      </div>
+    );
   }
 
   return (
@@ -3100,7 +3395,11 @@ function ToolTimeline({ calls }: { calls: ToolCallTrace[] }) {
 
 function SourceList({ sources }: { sources: SourceTrace[] }) {
   if (!sources.length) {
-    return <div className="font-mono text-xs text-zinc-500 dark:text-zinc-400">No sources.</div>;
+    return (
+      <div className="font-mono text-xs text-zinc-500 dark:text-zinc-400">
+        No sources.
+      </div>
+    );
   }
 
   return (
