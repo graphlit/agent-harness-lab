@@ -78,9 +78,11 @@ function chunkToText(chunk: unknown): string {
 export async function emitTextStream(
   stream: ReadableTextStream,
   recorder: LaneRunRecorder,
+  options: { onChunk?: () => void } = {},
 ): Promise<void> {
   if (isAsyncIterable(stream)) {
     for await (const chunk of stream) {
+      options.onChunk?.();
       await recorder.emitDelta(chunkToText(chunk));
     }
 
@@ -98,6 +100,7 @@ export async function emitTextStream(
           break;
         }
 
+        options.onChunk?.();
         await recorder.emitDelta(chunkToText(value));
       }
     } finally {

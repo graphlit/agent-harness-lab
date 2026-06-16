@@ -222,6 +222,10 @@ export class LaneRunRecorder {
     return this.finalAnswer;
   }
 
+  hasVisibleActivity(): boolean {
+    return this.finalAnswer.trim().length > 0 || this.toolCalls.size > 0;
+  }
+
   async emitDelta(text: string): Promise<void> {
     if (!text) {
       return;

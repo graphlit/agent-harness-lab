@@ -9,6 +9,10 @@ import {
 import { createGraphlitClient } from "@/lib/graphlit/client";
 import { LaneRunRecorder } from "@/lib/lanes/recorder";
 import { emitTextStream, lastStructuredStepText } from "@/lib/lanes/streaming";
+import {
+  isTransientProviderConnectionError,
+  summarizeProviderError,
+} from "@/lib/lanes/transientErrors";
 import { requireModelProviderApiKey } from "@/lib/model-provider-keys";
 import type { LaneRunContext, LaneRunResult } from "@/lib/types";
 import { errorDetails, errorMessage, safeJson } from "@/lib/utils";
@@ -18,11 +22,138 @@ import type { Memory as MastraMemory } from "@mastra/memory";
 
 let sharedMastraMemory: MastraMemory | null = null;
 
+const MASTRA_ANTHROPIC_MODEL_RETRIES = 2;
+const MASTRA_ANTHROPIC_OUTER_RETRIES = 1;
+const MASTRA_ANTHROPIC_STEP_TIMEOUT_MS = 120_000;
+const MASTRA_ANTHROPIC_CHUNK_TIMEOUT_MS = 90_000;
+const MASTRA_RETRY_BASE_DELAY_MS = 750;
+
 function logMastraLane(
   phase: string,
   details?: Record<string, unknown>,
 ): void {
   console.info(`[agent-harness-lab/lane/mastra] ${phase}`, details ?? {});
+}
+
+function abortReason(signal: AbortSignal | undefined): Error {
+  const reason = signal?.reason;
+
+  if (reason instanceof Error) {
+    return reason;
+  }
+
+  return new Error(
+    typeof reason === "string" ? reason : "Mastra lane retry was aborted.",
+  );
+}
+
+async function waitForRetry(ms: number, signal: AbortSignal | undefined) {
+  if (ms <= 0) {
+    return;
+  }
+
+  if (signal?.aborted) {
+    throw abortReason(signal);
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    const onAbort = () => {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+
+      signal?.removeEventListener("abort", onAbort);
+      reject(abortReason(signal));
+    };
+
+    timeoutId = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function createMastraAttemptSignal(
+  parentSignal: AbortSignal | undefined,
+  timeout:
+    | {
+        stepMs: number;
+        chunkMs: number;
+      }
+    | undefined,
+) {
+  const controller = new AbortController();
+  let stepTimeoutId: ReturnType<typeof setTimeout> | undefined;
+  let chunkTimeoutId: ReturnType<typeof setTimeout> | undefined;
+
+  const abort = (error: Error) => {
+    if (!controller.signal.aborted) {
+      controller.abort(error);
+    }
+  };
+  const onParentAbort = () => abort(abortReason(parentSignal));
+
+  if (parentSignal?.aborted) {
+    onParentAbort();
+  } else {
+    parentSignal?.addEventListener("abort", onParentAbort, { once: true });
+  }
+
+  if (timeout) {
+    stepTimeoutId = setTimeout(
+      () =>
+        abort(
+          new Error(
+            `Mastra Anthropic stream step timed out after ${timeout.stepMs}ms.`,
+          ),
+        ),
+      timeout.stepMs,
+    );
+  }
+
+  const clearStepTimeout = () => {
+    if (stepTimeoutId) {
+      clearTimeout(stepTimeoutId);
+      stepTimeoutId = undefined;
+    }
+  };
+  const clearChunkTimeout = () => {
+    if (chunkTimeoutId) {
+      clearTimeout(chunkTimeoutId);
+      chunkTimeoutId = undefined;
+    }
+  };
+  const armChunkTimeout = () => {
+    if (!timeout) {
+      return;
+    }
+
+    clearChunkTimeout();
+    chunkTimeoutId = setTimeout(
+      () =>
+        abort(
+          new Error(
+            `Mastra Anthropic stream chunk timed out after ${timeout.chunkMs}ms.`,
+          ),
+        ),
+      timeout.chunkMs,
+    );
+  };
+  const cleanup = () => {
+    clearStepTimeout();
+    clearChunkTimeout();
+    parentSignal?.removeEventListener("abort", onParentAbort);
+  };
+
+  return {
+    signal: controller.signal,
+    clearStepTimeout,
+    armChunkTimeout,
+    clearChunkTimeout,
+    cleanup,
+  };
 }
 
 async function getMastraMemory(): Promise<MastraMemory> {
@@ -207,6 +338,10 @@ export async function runMastraLane(
           : (await import("@ai-sdk/openai")).createOpenAI({
               apiKey: requireModelProviderApiKey("openai", "the Mastra lane"),
             })(modelId);
+    const mastraModelRetries =
+      context.modelProvider === "anthropic"
+        ? MASTRA_ANTHROPIC_MODEL_RETRIES
+        : 0;
     const agent = new Agent({
       id: "graphlit-knowledge-agent",
       name: "Graphlit Knowledge Agent",
@@ -214,89 +349,189 @@ export async function runMastraLane(
       model,
       tools,
       memory,
+      maxRetries: mastraModelRetries,
     });
     recorder.mergeSession({
       mastraResourceId: resourceId,
       mastraThreadId: threadId,
     });
-    logMastraLane("stream.start", {
-      runId: context.runId,
-      turnId: context.turnId,
-      model: modelId,
-      modelProvider: context.modelProvider,
-      resourceId,
-      threadId,
-      toolCount: Object.keys(tools).length,
-    });
-    recorder.recordPhase("mastra.stream.start", {
-      model: modelId,
-      modelProvider: context.modelProvider,
-      resourceId,
-      threadId,
-      toolCount: Object.keys(tools).length,
-      toolChoice: "analyze_prompt_first",
-      streaming: {
-        api: "Agent.stream().textStream",
-        cadence: "native",
-      },
-    });
-    const result = await agent.stream(context.prompt, {
-      memory: {
-        resource: resourceId,
-        thread: threadId,
-      },
-      runId: context.runId,
-      maxSteps: AGENT_MAX_STEPS,
-      prepareStep: ({ stepNumber }) => ({
-        toolChoice:
-          stepNumber === 0
-            ? {
-                type: "tool" as const,
-                toolName: ANALYZE_PROMPT_TOOL_NAME,
-              }
-            : "auto",
-      }),
-      abortSignal: context.abortSignal,
-    });
-    await emitTextStream(result.textStream, recorder);
-    const [finalText, fullOutput, totalUsage, steps] = await Promise.all([
-      result.text,
-      result.getFullOutput(),
-      result.totalUsage,
-      "steps" in result ? result.steps : Promise.resolve(undefined),
-    ]);
-    logMastraLane("stream.complete", {
-      runId: context.runId,
-      turnId: context.turnId,
-      resourceId,
-      threadId,
-    });
-    recorder.recordPhase("mastra.stream.complete", {
-      resourceId,
-      threadId,
-    });
-    recorder.recordTokenUsage(totalUsage, "Mastra total usage");
-    recorder.recordRaw(
-      safeJson({
-        output: fullOutput,
-        steps,
-        totalUsage,
+    const maxAttempts =
+      context.modelProvider === "anthropic"
+        ? MASTRA_ANTHROPIC_OUTER_RETRIES + 1
+        : 1;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      logMastraLane("stream.start", {
+        runId: context.runId,
+        turnId: context.turnId,
+        model: modelId,
+        modelProvider: context.modelProvider,
+        resourceId,
+        threadId,
+        toolCount: Object.keys(tools).length,
+        attempt,
+        maxAttempts,
+        modelRetries: mastraModelRetries,
+      });
+      recorder.recordPhase("mastra.stream.start", {
+        model: modelId,
+        modelProvider: context.modelProvider,
+        resourceId,
+        threadId,
+        toolCount: Object.keys(tools).length,
+        toolChoice: "analyze_prompt_first",
+        attempt,
+        maxAttempts,
+        modelRetries: mastraModelRetries,
         streaming: {
           api: "Agent.stream().textStream",
           cadence: "native",
         },
-      }),
-    );
+        timeout:
+          context.modelProvider === "anthropic"
+            ? {
+                stepMs: MASTRA_ANTHROPIC_STEP_TIMEOUT_MS,
+                chunkMs: MASTRA_ANTHROPIC_CHUNK_TIMEOUT_MS,
+              }
+            : undefined,
+      });
 
-    const structuredFinalText = lastStructuredStepText(steps);
-    const resolvedFinalText =
-      structuredFinalText || finalText || mastraOutputText(fullOutput);
+      try {
+        const timeout =
+          context.modelProvider === "anthropic"
+            ? {
+                stepMs: MASTRA_ANTHROPIC_STEP_TIMEOUT_MS,
+                chunkMs: MASTRA_ANTHROPIC_CHUNK_TIMEOUT_MS,
+              }
+            : undefined;
+        const attemptSignal = createMastraAttemptSignal(
+          context.abortSignal,
+          timeout,
+        );
 
-    if (resolvedFinalText && resolvedFinalText !== recorder.getAnswer()) {
-      await recorder.emitSnapshot(resolvedFinalText);
+        try {
+          const result = await agent.stream(context.prompt, {
+            memory: {
+              resource: resourceId,
+              thread: threadId,
+            },
+            runId: context.runId,
+            maxSteps: AGENT_MAX_STEPS,
+            prepareStep: ({ stepNumber }) => ({
+              toolChoice:
+                stepNumber === 0
+                  ? {
+                      type: "tool" as const,
+                      toolName: ANALYZE_PROMPT_TOOL_NAME,
+                    }
+                  : "auto",
+            }),
+            abortSignal: attemptSignal.signal,
+          });
+          attemptSignal.clearStepTimeout();
+          attemptSignal.armChunkTimeout();
+
+          await emitTextStream(result.textStream, recorder, {
+            onChunk: attemptSignal.armChunkTimeout,
+          });
+          attemptSignal.clearChunkTimeout();
+
+          const [finalText, fullOutput, totalUsage, steps] = await Promise.all([
+            result.text,
+            result.getFullOutput(),
+            result.totalUsage,
+            "steps" in result ? result.steps : Promise.resolve(undefined),
+          ]);
+          logMastraLane("stream.complete", {
+            runId: context.runId,
+            turnId: context.turnId,
+            resourceId,
+            threadId,
+            attempt,
+          });
+          recorder.recordPhase("mastra.stream.complete", {
+            resourceId,
+            threadId,
+            attempt,
+          });
+          recorder.recordTokenUsage(totalUsage, "Mastra total usage");
+          recorder.recordRaw(
+            safeJson({
+              output: fullOutput,
+              steps,
+              totalUsage,
+              streaming: {
+                api: "Agent.stream().textStream",
+                cadence: "native",
+              },
+              attempt,
+            }),
+          );
+
+          const structuredFinalText = lastStructuredStepText(steps);
+          const resolvedFinalText =
+            structuredFinalText || finalText || mastraOutputText(fullOutput);
+
+          if (resolvedFinalText && resolvedFinalText !== recorder.getAnswer()) {
+            await recorder.emitSnapshot(resolvedFinalText);
+          }
+
+          return recorder.result();
+        } finally {
+          attemptSignal.cleanup();
+        }
+      } catch (error) {
+        const errorSummary = summarizeProviderError(error);
+        const isTransient = isTransientProviderConnectionError(error);
+        const retrySkipReason =
+          attempt >= maxAttempts
+            ? "max_attempts"
+            : context.abortSignal?.aborted
+              ? "aborted"
+              : recorder.hasVisibleActivity()
+                ? "visible_activity"
+                : !isTransient
+                  ? "not_transient"
+                  : undefined;
+
+        if (!retrySkipReason) {
+          const delayMs = MASTRA_RETRY_BASE_DELAY_MS * attempt;
+          const event = {
+            phase: "mastra.stream.retry.scheduled",
+            attempt,
+            nextAttempt: attempt + 1,
+            maxAttempts,
+            delayMs,
+            error: errorSummary,
+          };
+
+          recorder.recordPhase(event.phase, event);
+          await context.emit({
+            type: "lane_trace",
+            runId: context.runId,
+            turnId: context.turnId,
+            laneId: "mastra",
+            event,
+          });
+          await waitForRetry(delayMs, context.abortSignal);
+          continue;
+        }
+
+        if (context.modelProvider === "anthropic") {
+          recorder.recordPhase("mastra.stream.retry.skipped", {
+            attempt,
+            maxAttempts,
+            reason: retrySkipReason,
+            isTransient,
+            error: errorSummary,
+          });
+        }
+
+        throw error;
+      }
     }
 
-    return recorder.result();
+    throw new Error("Mastra stream finished without producing a result.");
   } catch (error) {
     const message = errorMessage(error);
     const details = errorDetails(error);
