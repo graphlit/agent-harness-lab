@@ -4,6 +4,14 @@ Visual Next.js sample for comparing how agent harnesses answer the same prompt w
 
 [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fgraphlit%2Fagent-harness-lab&project-name=agent-harness-lab&repository-name=agent-harness-lab&env=GRAPHLIT_ORGANIZATION_ID,GRAPHLIT_ENVIRONMENT_ID,GRAPHLIT_JWT_SECRET,OPENAI_API_KEY,ANTHROPIC_API_KEY,GEMINI_API_KEY&envDescription=Graphlit%20project%20credentials%20and%20model%20provider%20API%20keys.%20Configure%20at%20least%20one%20provider%20key.&envLink=https%3A%2F%2Fwww.graphlit.dev)
 
+<p align="center">
+  <img src="./public/images/agent-harness-lab-workbench.jpeg" alt="Graphlit Agent Harness Lab workbench showing parallel harness lanes and the judge panel" width="100%" />
+</p>
+
+<p align="center">
+  <em>Run multiple agent harnesses side by side against the same Graphlit-backed context, then inspect tools, sources, timings, token usage, and judge scores.</em>
+</p>
+
 The app runs selected lanes in parallel:
 
 - Graphlit

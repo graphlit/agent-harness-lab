@@ -74,7 +74,7 @@ export function mergeAgentInstructions(
     .join("\n\n") || undefined;
 }
 
-export const JUDGE_RUBRIC_VERSION = "2026-06-13i";
+export const JUDGE_RUBRIC_VERSION = "2026-06-13j";
 export const JUDGE_MODEL_LABEL = "Gemini 3.5 Flash";
 
 export const MODEL_PROVIDER_LABELS: Record<ModelProviderPreference, string> = {
