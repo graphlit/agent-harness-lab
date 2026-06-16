@@ -87,7 +87,9 @@ Use Node.js 20.9.0 or newer.
 
 Create a Graphlit project before running the app:
 
-1. Sign up or sign in at [graphlit.dev](https://www.graphlit.dev).
+1. Sign up or sign in at [graphlit.dev](https://www.graphlit.dev). New
+   Graphlit accounts do not require a credit card and include 100 free credits
+   to run the lab.
 2. Create or open a Graphlit project.
 3. Open the project environment panel from the sidebar.
 4. Copy the environment variables for the environment you want to use.
@@ -128,7 +130,7 @@ If `NEXT_PUBLIC_DEFAULT_LANES` is unset, all lanes that have the required creden
 
 ## Deploy To Vercel
 
-Use the deploy button above to clone this repo into your Vercel account. Vercel will prompt for Graphlit variables and model provider API key fields before the first deployment. Configure at least one provider key to run the app.
+Use the deploy button above to clone this repo into your Vercel account. Vercel will prompt for Graphlit variables and model provider API key fields before the first deployment. Creating a Graphlit account for the lab does not require a credit card, and new accounts include 100 free credits. Configure at least one provider key to run the app.
 
 ## How It Works
 
