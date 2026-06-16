@@ -18,7 +18,7 @@ import type {
 } from "@/lib/types";
 import { createGraphlitTools } from "@/lib/tools/createGraphlitTools";
 import { recordGraphlitToolCall } from "@/lib/tools/recordTool";
-import { errorMessage, safeJson } from "@/lib/utils";
+import { errorDetails, errorMessage, safeJson } from "@/lib/utils";
 import type { BaseMessage, StoredMessage } from "@langchain/core/messages";
 
 type LangGraphToolChoice =
@@ -35,6 +35,16 @@ function logLangGraphLane(
   details?: Record<string, unknown>,
 ): void {
   console.info(`[agent-harness-lab/lane/langgraph] ${phase}`, details ?? {});
+}
+
+function logLangGraphDiagnostic(
+  phase: string,
+  details: Record<string, unknown>,
+): void {
+  console.error(
+    `[LANGGRAPH_STREAM] ${phase}`,
+    JSON.stringify(safeJson(details)),
+  );
 }
 
 function contentText(content: unknown): string {
@@ -177,6 +187,20 @@ function requiredFirstLangGraphToolChoice(
   return toolName;
 }
 
+type LangGraphStreamDiagnostics = {
+  phase: string;
+  modelId?: string;
+  threadId?: string;
+  previousMessageCount: number;
+  inputMessageCount: number;
+  toolCount: number;
+  modelCallCount: number;
+  toolCallCount: number;
+  streamedMessageCount: number;
+  streamedChunkCount: number;
+  streamedTextChars: number;
+};
+
 export async function runLangGraphLane(
   context: LaneRunContext,
 ): Promise<LaneRunResult> {
@@ -199,8 +223,20 @@ export async function runLangGraphLane(
     context.systemPrompt,
     context.runtimeInstructions,
   );
+  const streamDiagnostics: LangGraphStreamDiagnostics = {
+    phase: "initializing",
+    previousMessageCount: 0,
+    inputMessageCount: 0,
+    toolCount: graphlitTools.length,
+    modelCallCount: 0,
+    toolCallCount: 0,
+    streamedMessageCount: 0,
+    streamedChunkCount: 0,
+    streamedTextChars: 0,
+  };
 
   try {
+    streamDiagnostics.phase = "sdk.import.start";
     logLangGraphLane("sdk.import.start", {
       runId: context.runId,
       turnId: context.turnId,
@@ -226,6 +262,7 @@ export async function runLangGraphLane(
       import("@langchain/core/tools"),
       import("@langchain/core/messages"),
     ]);
+    streamDiagnostics.phase = "sdk.import.complete";
     logLangGraphLane("sdk.import.complete", {
       runId: context.runId,
       turnId: context.turnId,
@@ -256,15 +293,22 @@ export async function runLangGraphLane(
         },
       ),
     );
+    streamDiagnostics.phase = "tools.ready";
+    streamDiagnostics.toolCount = langGraphTools.length;
     const threadId =
       context.laneSession?.langGraphThreadId ?? crypto.randomUUID();
+    streamDiagnostics.threadId = threadId;
     const previousMessages = mapStoredMessagesToChatMessages(
       storedLangGraphMessages(context.laneSession),
     );
     const messages = [...previousMessages, new HumanMessage(context.prompt)];
+    streamDiagnostics.previousMessageCount = previousMessages.length;
+    streamDiagnostics.inputMessageCount = messages.length;
     const modelId = MODEL_PROVIDER_MODEL_IDS[context.modelProvider][
       context.modelSize
     ];
+    streamDiagnostics.modelId = modelId;
+    streamDiagnostics.phase = "model.init.start";
     const model = await (async () => {
       if (context.modelProvider === "anthropic") {
         const { ChatAnthropic } = await import("@langchain/anthropic");
@@ -300,14 +344,13 @@ export async function runLangGraphLane(
         },
       });
     })();
-    let modelCallCount = 0;
-    let toolCallCount = 0;
+    streamDiagnostics.phase = "model.init.complete";
     const requiredFirstToolMiddleware = createMiddleware({
       name: "RequiredFirstGraphlitToolCall",
       wrapModelCall: async (request, handler) => {
-        const isFirstModelCall = modelCallCount === 0;
+        const isFirstModelCall = streamDiagnostics.modelCallCount === 0;
 
-        modelCallCount += 1;
+        streamDiagnostics.modelCallCount += 1;
 
         if (!isFirstModelCall || langGraphTools.length === 0) {
           return handler(request);
@@ -322,7 +365,7 @@ export async function runLangGraphLane(
         });
       },
       wrapToolCall: async (request, handler) => {
-        if (toolCallCount === 0) {
+        if (streamDiagnostics.toolCallCount === 0) {
           const toolName = request.toolCall.name;
 
           if (toolName !== ANALYZE_PROMPT_TOOL_NAME) {
@@ -332,11 +375,12 @@ export async function runLangGraphLane(
           }
         }
 
-        toolCallCount += 1;
+        streamDiagnostics.toolCallCount += 1;
 
         return handler(request);
       },
     });
+    streamDiagnostics.phase = "agent.create.start";
     const agent = createAgent({
       name: "graphlit-knowledge-agent",
       model,
@@ -345,6 +389,7 @@ export async function runLangGraphLane(
       middleware: [requiredFirstToolMiddleware],
     });
 
+    streamDiagnostics.phase = "agent.create.complete";
     recorder.mergeSession({ langGraphThreadId: threadId });
     logLangGraphLane("stream.start", {
       runId: context.runId,
@@ -365,6 +410,7 @@ export async function runLangGraphLane(
         cadence: "native",
       },
     });
+    streamDiagnostics.phase = "streamEvents.start";
     const run = await agent.streamEvents(
       { messages },
       {
@@ -375,18 +421,40 @@ export async function runLangGraphLane(
       },
     );
 
+    streamDiagnostics.phase = "messages.iterating";
     for await (const message of run.messages) {
-      await emitTextStream(message.text, recorder);
+      const answerCharsBefore = recorder.getAnswer().length;
+
+      streamDiagnostics.streamedMessageCount += 1;
+      await emitTextStream(message.text, recorder, {
+        onChunk: () => {
+          streamDiagnostics.streamedChunkCount += 1;
+        },
+      });
+      streamDiagnostics.streamedTextChars += Math.max(
+        0,
+        recorder.getAnswer().length - answerCharsBefore,
+      );
     }
 
+    streamDiagnostics.phase = "output.await";
     const result = await run.output;
+    streamDiagnostics.phase = "output.complete";
     logLangGraphLane("stream.complete", {
       runId: context.runId,
       turnId: context.turnId,
       threadId,
+      streamedMessageCount: streamDiagnostics.streamedMessageCount,
+      streamedTextChars: streamDiagnostics.streamedTextChars,
+      modelCallCount: streamDiagnostics.modelCallCount,
+      toolCallCount: streamDiagnostics.toolCallCount,
     });
     recorder.recordPhase("langgraph.stream.complete", {
       threadId,
+      streamedMessageCount: streamDiagnostics.streamedMessageCount,
+      streamedTextChars: streamDiagnostics.streamedTextChars,
+      modelCallCount: streamDiagnostics.modelCallCount,
+      toolCallCount: streamDiagnostics.toolCallCount,
     });
 
     const resultMessages = Array.isArray(result.messages)
@@ -418,11 +486,36 @@ export async function runLangGraphLane(
 
     return recorder.result();
   } catch (error) {
+    const details = {
+      runId: context.runId,
+      turnId: context.turnId,
+      error: errorMessage(error),
+      errorDetails: errorDetails(error),
+      diagnostics: {
+        ...streamDiagnostics,
+        answerChars: recorder.getAnswer().length,
+        abortSignalAborted: context.abortSignal?.aborted ?? false,
+        abortSignalReason: context.abortSignal?.aborted
+          ? safeJson(context.abortSignal.reason)
+          : undefined,
+      },
+    };
+
     logLangGraphLane("stream.failed", {
       runId: context.runId,
       turnId: context.turnId,
       error: errorMessage(error),
+      diagnostics: details.diagnostics,
+      details: details.errorDetails,
     });
+    logLangGraphDiagnostic("Stream failed with error details", details);
+    recorder.recordRaw(
+      safeJson({
+        phase: "langgraph.stream.failed",
+        ...details,
+      }),
+    );
+
     return recorder.result(errorMessage(error));
   }
 }
