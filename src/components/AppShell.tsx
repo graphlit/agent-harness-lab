@@ -600,6 +600,23 @@ const answerMarkdownComponents: Components = {
       {children}
     </blockquote>
   ),
+  img: ({ src, alt, title }) => {
+    const imageSrc = typeof src === "string" ? src.trim() : "";
+
+    if (!imageSrc) {
+      return null;
+    }
+
+    return (
+      <img
+        src={imageSrc}
+        alt={alt ?? ""}
+        title={title}
+        className="my-3 max-h-80 max-w-full rounded-sm border border-zinc-200 object-contain dark:border-zinc-800"
+        loading="lazy"
+      />
+    );
+  },
   table: ({ children }) => (
     <div className="my-3 max-w-full overflow-x-auto rounded-sm border border-zinc-200 dark:border-zinc-800">
       <table className="min-w-[540px] border-collapse text-left text-[11px] leading-4 text-zinc-800 dark:text-zinc-200">
@@ -702,6 +719,22 @@ const sourceMarkdownComponents: Components = {
       {children}
     </blockquote>
   ),
+  img: ({ src, alt }) => {
+    const imageSrc = typeof src === "string" ? src.trim() : "";
+
+    if (!imageSrc) {
+      return null;
+    }
+
+    return (
+      <img
+        src={imageSrc}
+        alt={alt ?? ""}
+        className="my-1 max-h-16 max-w-full rounded-sm border border-zinc-200 object-contain dark:border-zinc-800"
+        loading="lazy"
+      />
+    );
+  },
   strong: ({ children }) => (
     <strong className="font-semibold text-zinc-800 dark:text-zinc-200">
       {children}
